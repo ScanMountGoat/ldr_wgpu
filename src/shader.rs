@@ -27,16 +27,43 @@ const _: () = assert!(
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct WorldTransform {
-    pub transform: glam::Mat4,
+pub struct Uniforms {
+    pub color: glam::Vec4,
 }
 const _: () = assert!(
-    std::mem::size_of:: < WorldTransform > () == 64,
-    "size of WorldTransform does not match WGSL"
+    std::mem::size_of:: < Uniforms > () == 16, "size of Uniforms does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(WorldTransform, transform) == 0,
-    "offset of WorldTransform.transform does not match WGSL"
+    memoffset::offset_of!(Uniforms, color) == 0,
+    "offset of Uniforms.color does not match WGSL"
+);
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct InstanceInput {
+    pub model_matrix_0: glam::Vec4,
+    pub model_matrix_1: glam::Vec4,
+    pub model_matrix_2: glam::Vec4,
+    pub model_matrix_3: glam::Vec4,
+}
+const _: () = assert!(
+    std::mem::size_of:: < InstanceInput > () == 64,
+    "size of InstanceInput does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceInput, model_matrix_0) == 0,
+    "offset of InstanceInput.model_matrix_0 does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceInput, model_matrix_1) == 16,
+    "offset of InstanceInput.model_matrix_1 does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceInput, model_matrix_2) == 32,
+    "offset of InstanceInput.model_matrix_2 does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceInput, model_matrix_3) == 48,
+    "offset of InstanceInput.model_matrix_3 does not match WGSL"
 );
 pub mod bind_groups {
     pub struct BindGroup0(wgpu::BindGroup);
@@ -85,7 +112,7 @@ pub mod bind_groups {
     }
     pub struct BindGroup1(wgpu::BindGroup);
     pub struct BindGroupLayout1<'a> {
-        pub world_transform: wgpu::BufferBinding<'a>,
+        pub uniforms: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -115,9 +142,7 @@ pub mod bind_groups {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::Buffer(
-                                    bindings.world_transform,
-                                ),
+                                resource: wgpu::BindingResource::Buffer(bindings.uniforms),
                             },
                         ],
                         label: None,
@@ -157,6 +182,43 @@ pub mod vertex {
                 array_stride: std::mem::size_of::<super::VertexInput>() as u64,
                 step_mode,
                 attributes: &super::VertexInput::VERTEX_ATTRIBUTES,
+            }
+        }
+    }
+    impl super::InstanceInput {
+        pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_0)
+                    as u64,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_1)
+                    as u64,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_2)
+                    as u64,
+                shader_location: 3,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_3)
+                    as u64,
+                shader_location: 4,
+            },
+        ];
+        pub fn vertex_buffer_layout(
+            step_mode: wgpu::VertexStepMode,
+        ) -> wgpu::VertexBufferLayout<'static> {
+            wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<super::InstanceInput>() as u64,
+                step_mode,
+                attributes: &super::InstanceInput::VERTEX_ATTRIBUTES,
             }
         }
     }

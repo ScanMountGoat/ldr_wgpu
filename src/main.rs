@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use futures::executor::block_on;
-use glam::{vec3, vec4, Mat4, Vec3};
-use ldr_tools::LDrawSceneInstanced;
+use glam::{vec3, vec4, Mat4, Vec3, Vec4};
+use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced};
 use wgpu::util::DeviceExt;
 use winit::{
+    dpi::PhysicalPosition,
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
@@ -12,11 +15,8 @@ mod shader;
 
 struct InstancedMesh {
     mesh: Mesh,
-    instances: Vec<MeshInstance>,
-}
-
-struct MeshInstance {
-    world_transform: wgpu::Buffer,
+    instance_count: u32,
+    instance_transforms_buffer: wgpu::Buffer,
     bind_group1: crate::shader::bind_groups::BindGroup1,
 }
 
@@ -45,10 +45,23 @@ struct State {
     pipeline: wgpu::RenderPipeline,
 
     instanced_meshes: Vec<InstancedMesh>,
+
+    input_state: InputState,
+}
+
+#[derive(Default)]
+struct InputState {
+    is_mouse_left_clicked: bool,
+    is_mouse_right_clicked: bool,
+    previous_cursor_position: PhysicalPosition<f64>,
 }
 
 impl State {
-    async fn new(window: &Window, scene: &LDrawSceneInstanced) -> Self {
+    async fn new(
+        window: &Window,
+        scene: &LDrawSceneInstanced,
+        color_table: &HashMap<u32, LDrawColor>,
+    ) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -97,9 +110,12 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[crate::shader::VertexInput::vertex_buffer_layout(
-                    wgpu::VertexStepMode::Vertex,
-                )],
+                buffers: &[
+                    crate::shader::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
+                    crate::shader::InstanceInput::vertex_buffer_layout(
+                        wgpu::VertexStepMode::Instance,
+                    ),
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -136,10 +152,11 @@ impl State {
         );
 
         let start = std::time::Instant::now();
-        let instanced_meshes = load_instances(&device, scene);
+        let instanced_meshes = load_instances(&device, scene, color_table);
         println!(
-            "Load {:?} parts: {:?}",
+            "Load {:?} parts and {:?} unique parts: {:?}",
             instanced_meshes.len(),
+            scene.geometry_cache.len(),
             start.elapsed()
         );
 
@@ -159,6 +176,7 @@ impl State {
             camera_buffer,
             depth_texture,
             depth_view,
+            input_state: Default::default(),
         }
     }
 
@@ -219,16 +237,15 @@ impl State {
         // Draw the instances of each unique part and color.
         // This allows reusing most of the rendering state for better performance.
         for instanced_mesh in &self.instanced_meshes {
+            instanced_mesh.bind_group1.set(&mut render_pass);
+
             let mesh = &instanced_mesh.mesh;
             render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, instanced_mesh.instance_transforms_buffer.slice(..));
             render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-            // Each instance has a unique transform.
-            // TODO: Benchmark with actual instances instead.
-            for instance in &instanced_mesh.instances {
-                instance.bind_group1.set(&mut render_pass);
-                render_pass.draw_indexed(0..mesh.index_count, 0, 0..1)
-            }
+            // Draw each instance with a different transform.
+            render_pass.draw_indexed(0..mesh.index_count, 0, 0..instanced_mesh.instance_count)
         }
 
         drop(render_pass);
@@ -239,6 +256,68 @@ impl State {
         output.present();
 
         Ok(())
+    }
+
+    // Make this a reusable library that only requires glam?
+    fn handle_input(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::KeyboardInput { input, .. } => {
+                // Basic camera controls using arrow keys.
+                if let Some(keycode) = input.virtual_keycode {
+                    match keycode {
+                        VirtualKeyCode::Left => self.translation.x += 1.0,
+                        VirtualKeyCode::Right => self.translation.x -= 1.0,
+                        VirtualKeyCode::Up => self.translation.y -= 1.0,
+                        VirtualKeyCode::Down => self.translation.y += 1.0,
+                        _ => (),
+                    }
+                }
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                // Track mouse clicks to only rotate when dragging while clicked.
+                match (button, state) {
+                    (MouseButton::Left, ElementState::Pressed) => {
+                        self.input_state.is_mouse_left_clicked = true
+                    }
+                    (MouseButton::Left, ElementState::Released) => {
+                        self.input_state.is_mouse_left_clicked = false
+                    }
+                    (MouseButton::Right, ElementState::Pressed) => {
+                        self.input_state.is_mouse_right_clicked = true
+                    }
+                    (MouseButton::Right, ElementState::Released) => {
+                        self.input_state.is_mouse_right_clicked = false
+                    }
+                    _ => (),
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if self.input_state.is_mouse_left_clicked {
+                    let delta_x = position.x - self.input_state.previous_cursor_position.x;
+                    let delta_y = position.y - self.input_state.previous_cursor_position.y;
+
+                    // Swap XY so that dragging left/right rotates left/right.
+                    self.rotation_xyz.x += (delta_y * 0.01) as f32;
+                    self.rotation_xyz.y += (delta_x * 0.01) as f32;
+                }
+                // Always update the position to avoid jumps when moving between clicks.
+                self.input_state.previous_cursor_position = *position;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // TODO: Add tests for handling scroll events properly?
+                // Scale zoom speed with distance to make it easier to zoom out large scenes.
+                let delta_z = match delta {
+                    MouseScrollDelta::LineDelta(_x, y) => *y * self.translation.z.abs() * 0.1,
+                    MouseScrollDelta::PixelDelta(p) => {
+                        p.y as f32 * self.translation.z.abs() * 0.005
+                    }
+                };
+
+                // Clamp to prevent the user from zooming through the origin.
+                self.translation.z = (self.translation.z + delta_z).min(-1.0);
+            }
+            _ => (),
+        }
     }
 }
 
@@ -266,40 +345,50 @@ fn create_depth_texture(
     (depth_texture, depth_view)
 }
 
-fn load_instances(device: &wgpu::Device, scene: &LDrawSceneInstanced) -> Vec<InstancedMesh> {
+fn load_instances(
+    device: &wgpu::Device,
+    scene: &LDrawSceneInstanced,
+    color_table: &HashMap<u32, LDrawColor>,
+) -> Vec<InstancedMesh> {
     scene
         .geometry_world_transforms
         .iter()
-        .map(|((name, _color), transforms)| {
+        .map(|((name, color), transforms)| {
             let geometry = &scene.geometry_cache[name];
 
             let mesh = create_mesh(device, geometry);
+            let instance_transforms_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("instance transforms buffer"),
+                    contents: bytemuck::cast_slice(&transforms),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
 
-            let instances = transforms
-                .iter()
-                .map(|transform| {
-                    let world_transform_buffer =
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("world transform buffer"),
-                            contents: bytemuck::cast_slice(&[*transform]),
-                            usage: wgpu::BufferUsages::UNIFORM,
-                        });
+            // TODO: missing color codes?
+            let color = color_table
+                .get(color)
+                .map(|c| Vec4::from(c.rgba_linear))
+                .unwrap_or(vec4(1.0, 0.0, 1.0, 1.0));
 
-                    let bind_group1 = crate::shader::bind_groups::BindGroup1::from_bindings(
-                        device,
-                        crate::shader::bind_groups::BindGroupLayout1 {
-                            world_transform: world_transform_buffer.as_entire_buffer_binding(),
-                        },
-                    );
+            let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("uniforms buffer"),
+                contents: bytemuck::cast_slice(&[crate::shader::Uniforms { color }]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
-                    MeshInstance {
-                        world_transform: world_transform_buffer,
-                        bind_group1,
-                    }
-                })
-                .collect();
+            let bind_group1 = crate::shader::bind_groups::BindGroup1::from_bindings(
+                device,
+                crate::shader::bind_groups::BindGroupLayout1 {
+                    uniforms: uniforms_buffer.as_entire_buffer_binding(),
+                },
+            );
 
-            InstancedMesh { mesh, instances }
+            InstancedMesh {
+                mesh,
+                instance_count: transforms.len() as u32,
+                instance_transforms_buffer,
+                bind_group1,
+            }
         })
         .collect()
 }
@@ -312,6 +401,7 @@ fn create_mesh(device: &wgpu::Device, geometry: &ldr_tools::LDrawGeometry) -> Me
         .iter()
         .map(|v| vec4(v.x, v.y, v.z, 1.0))
         .collect();
+    // TODO: Add face colors as a vertex attribute.
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertex buffer"),
         contents: bytemuck::cast_slice(&positions),
@@ -357,8 +447,14 @@ fn main() {
     let path = &args[2];
 
     let start = std::time::Instant::now();
-    let scene = ldr_tools::load_file_instanced(path, ldraw_path);
+    let settings = GeometrySettings {
+        triangulate: true,
+        ..Default::default()
+    };
+    let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
     println!("Load scene: {:?}", start.elapsed());
+
+    let color_table = ldr_tools::load_color_table(ldraw_path);
 
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
@@ -366,7 +462,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = block_on(State::new(&window, &scene));
+    let mut state = block_on(State::new(&window, &scene, &color_table));
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
             ref event,
@@ -389,21 +485,10 @@ fn main() {
             WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                 state.resize(**new_inner_size);
             }
-            WindowEvent::KeyboardInput { input, .. } => {
-                // Basic camera controls using arrow keys.
-                let size = window.inner_size();
-                if let Some(keycode) = input.virtual_keycode {
-                    match keycode {
-                        VirtualKeyCode::Left => state.rotation_xyz.y -= 0.1,
-                        VirtualKeyCode::Right => state.rotation_xyz.y += 0.1,
-                        VirtualKeyCode::Up => state.translation.z += 0.5,
-                        VirtualKeyCode::Down => state.translation.z -= 0.5,
-                        _ => (),
-                    }
-                }
-                state.update_camera(size);
+            _ => {
+                state.handle_input(event);
+                state.update_camera(window.inner_size());
             }
-            _ => {}
         },
         Event::RedrawRequested(_) => match state.render() {
             Ok(_) => {}
@@ -414,6 +499,6 @@ fn main() {
         Event::MainEventsCleared => {
             window.request_redraw();
         }
-        _ => {}
+        _ => (),
     });
 }
