@@ -17,23 +17,17 @@ mod shader;
 // Make our own so we can derive bytemuck.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct DrawIndexedIndirect {
+struct DrawIndirect {
     pub vertex_count: u32,
     pub instance_count: u32,
-    pub base_index: u32,
-    pub vertex_offset: i32,
+    pub base_vertex: u32,
     pub base_instance: u32,
 }
 
 struct InstancedMesh {
-    mesh: Mesh,
+    vertex_buffer: wgpu::Buffer,
     instance_transforms_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
-}
-
-struct Mesh {
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
 }
 
 struct State {
@@ -90,7 +84,7 @@ impl State {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: wgpu::Features::TEXTURE_COMPRESSION_BC,
+                    features: wgpu::Features::default(),
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -247,13 +241,12 @@ impl State {
         // Draw the instances of each unique part and color.
         // This allows reusing most of the rendering state for better performance.
         for instanced_mesh in &self.instanced_meshes {
-            let mesh = &instanced_mesh.mesh;
-            render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(0, instanced_mesh.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, instanced_mesh.instance_transforms_buffer.slice(..));
-            render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            // render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
             // Draw each instance with a different transform.
-            render_pass.draw_indexed_indirect(&instanced_mesh.indirect_buffer, 0)
+            render_pass.draw_indirect(&instanced_mesh.indirect_buffer, 0)
         }
 
         drop(render_pass);
@@ -364,7 +357,7 @@ fn load_instances(
         .map(|((name, color), transforms)| {
             let geometry = &scene.geometry_cache[name];
 
-            let mesh = create_mesh(device, geometry, *color, color_table);
+            let vertex_buffer = create_vertex_buffer(device, geometry, *color, color_table);
             let instance_transforms_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("instance transforms buffer"),
@@ -376,12 +369,11 @@ fn load_instances(
 
             // TODO: multidraw indirect for culling support?
             // TODO: benchmark on metal since it's emulated.
-            let indirect_draw = DrawIndexedIndirect {
+            let indirect_draw = DrawIndirect {
                 vertex_count: geometry.vertex_indices.len() as u32,
                 instance_count,
-                base_index: 0,
-                vertex_offset: 0,
                 base_instance: 0,
+                base_vertex: 0,
             };
             let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indirect buffer"),
@@ -390,7 +382,7 @@ fn load_instances(
             });
 
             InstancedMesh {
-                mesh,
+                vertex_buffer,
                 instance_transforms_buffer,
                 indirect_buffer,
             }
@@ -398,12 +390,12 @@ fn load_instances(
         .collect()
 }
 
-fn create_mesh(
+fn create_vertex_buffer(
     device: &wgpu::Device,
     geometry: &ldr_tools::LDrawGeometry,
     color_code: u32,
     color_table: &HashMap<u32, LDrawColor>,
-) -> Mesh {
+) -> wgpu::Buffer {
     // TODO: wgsl_to_wgpu should support non strict offset checking for vertex buffer structs.
     // This allows desktop applications to use vec3 for positions.
     let vertices: Vec<_> = geometry
@@ -438,23 +430,11 @@ fn create_mesh(
         })
         .collect();
 
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertex buffer"),
         contents: bytemuck::cast_slice(&vertices),
         usage: wgpu::BufferUsages::VERTEX,
-    });
-
-    // TODO: triangulate.
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("vertex buffer"),
-        contents: bytemuck::cast_slice(&geometry.vertex_indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-
-    Mesh {
-        vertex_buffer,
-        index_buffer,
-    }
+    })
 }
 
 fn mvp_matrix(
