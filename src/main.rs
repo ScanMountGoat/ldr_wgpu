@@ -13,10 +13,23 @@ use winit::{
 
 mod shader;
 
+// wgpu already provides this type.
+// Make our own so we can derive bytemuck.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DrawIndexedIndirect {
+    pub vertex_count: u32,
+    pub instance_count: u32,
+    pub base_index: u32,
+    pub vertex_offset: i32,
+    pub base_instance: u32,
+}
+
 struct InstancedMesh {
     mesh: Mesh,
     instance_count: u32,
     instance_transforms_buffer: wgpu::Buffer,
+    indirect_buffer: wgpu::Buffer,
     bind_group1: crate::shader::bind_groups::BindGroup1,
 }
 
@@ -245,7 +258,7 @@ impl State {
             render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
             // Draw each instance with a different transform.
-            render_pass.draw_indexed(0..mesh.index_count, 0, 0..instanced_mesh.instance_count)
+            render_pass.draw_indexed_indirect(&instanced_mesh.indirect_buffer, 0)
         }
 
         drop(render_pass);
@@ -383,10 +396,28 @@ fn load_instances(
                 },
             );
 
+            let instance_count = transforms.len() as u32;
+
+            // TODO: multidraw indirect for culling support?
+            // TODO: benchmark on metal since it's emulated.
+            let indirect_draw = DrawIndexedIndirect {
+                vertex_count: geometry.vertex_indices.len() as u32,
+                instance_count,
+                base_index: 0,
+                vertex_offset: 0,
+                base_instance: 0,
+            };
+            let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("indirect buffer"),
+                contents: bytemuck::cast_slice(&[indirect_draw]),
+                usage: wgpu::BufferUsages::INDIRECT,
+            });
+
             InstancedMesh {
                 mesh,
-                instance_count: transforms.len() as u32,
+                instance_count,
                 instance_transforms_buffer,
+                indirect_buffer,
                 bind_group1,
             }
         })
