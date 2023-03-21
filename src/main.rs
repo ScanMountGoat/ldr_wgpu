@@ -24,10 +24,13 @@ struct DrawIndirect {
     pub base_instance: u32,
 }
 
-struct InstancedMesh {
+/// Combined data for every part in the scene.
+/// Renderable with a single multidraw indirect call.
+struct IndirectSceneData {
     vertex_buffer: wgpu::Buffer,
     instance_transforms_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
+    draw_count: u32,
 }
 
 struct State {
@@ -48,7 +51,7 @@ struct State {
     bind_group0: crate::shader::bind_groups::BindGroup0,
     pipeline: wgpu::RenderPipeline,
 
-    instanced_meshes: Vec<InstancedMesh>,
+    render_data: IndirectSceneData,
 
     input_state: InputState,
 }
@@ -84,7 +87,8 @@ impl State {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: wgpu::Features::default(),
+                    features: wgpu::Features::MULTI_DRAW_INDIRECT
+                        | wgpu::Features::INDIRECT_FIRST_INSTANCE,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -156,10 +160,10 @@ impl State {
         );
 
         let start = std::time::Instant::now();
-        let instanced_meshes = load_instances(&device, scene, color_table);
+        let render_data = load_render_data(&device, scene, color_table);
         println!(
-            "Load {:?} parts and {:?} unique parts: {:?}",
-            instanced_meshes.len(),
+            "Load {} parts and {} unique parts: {:?}",
+            render_data.draw_count,
             scene.geometry_cache.len(),
             start.elapsed()
         );
@@ -174,7 +178,7 @@ impl State {
             config,
             pipeline,
             bind_group0,
-            instanced_meshes,
+            render_data,
             translation,
             rotation_xyz,
             camera_buffer,
@@ -240,15 +244,16 @@ impl State {
 
         // Draw the instances of each unique part and color.
         // This allows reusing most of the rendering state for better performance.
-        for instanced_mesh in &self.instanced_meshes {
-            render_pass.set_vertex_buffer(0, instanced_mesh.vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, instanced_mesh.instance_transforms_buffer.slice(..));
-            // render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.set_vertex_buffer(0, self.render_data.vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, self.render_data.instance_transforms_buffer.slice(..));
+        // render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-            // Draw each instance with a different transform.
-            render_pass.draw_indirect(&instanced_mesh.indirect_buffer, 0)
-        }
-
+        // Draw each instance with a different transform.
+        render_pass.multi_draw_indirect(
+            &self.render_data.indirect_buffer,
+            0,
+            self.render_data.draw_count,
+        );
         drop(render_pass);
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -346,95 +351,104 @@ fn create_depth_texture(
     (depth_texture, depth_view)
 }
 
-fn load_instances(
+fn load_render_data(
     device: &wgpu::Device,
     scene: &LDrawSceneInstanced,
     color_table: &HashMap<u32, LDrawColor>,
-) -> Vec<InstancedMesh> {
-    scene
-        .geometry_world_transforms
-        .iter()
-        .map(|((name, color), transforms)| {
-            let geometry = &scene.geometry_cache[name];
+) -> IndirectSceneData {
+    // Combine all data into a single multidraw indirect call.
+    let mut combined_vertices = Vec::new();
+    let mut combined_transforms = Vec::new();
+    let mut indirect_draws = Vec::new();
 
-            let vertex_buffer = create_vertex_buffer(device, geometry, *color, color_table);
-            let instance_transforms_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("instance transforms buffer"),
-                    contents: bytemuck::cast_slice(&transforms),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
+    for ((name, color), transforms) in &scene.geometry_world_transforms {
+        let geometry = &scene.geometry_cache[name];
 
-            let instance_count = transforms.len() as u32;
+        let base_vertex = combined_vertices.len() as u32;
+        let base_instance = combined_transforms.len() as u32;
 
-            // TODO: multidraw indirect for culling support?
-            // TODO: benchmark on metal since it's emulated.
-            let indirect_draw = DrawIndirect {
-                vertex_count: geometry.vertex_indices.len() as u32,
-                instance_count,
-                base_instance: 0,
-                base_vertex: 0,
-            };
-            let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("indirect buffer"),
-                contents: bytemuck::cast_slice(&[indirect_draw]),
-                usage: wgpu::BufferUsages::INDIRECT,
-            });
+        append_vertices(&mut combined_vertices, geometry, *color, color_table);
 
-            InstancedMesh {
-                vertex_buffer,
-                instance_transforms_buffer,
-                indirect_buffer,
-            }
-        })
-        .collect()
+        let vertex_count = combined_vertices.len() as u32 - base_vertex;
+
+        let instance_count = transforms.len() as u32;
+
+        // Each draw specifies the part mesh using an offset and count.
+        // The instance count steps through the transforms buffer.
+        let indirect_draw = DrawIndirect {
+            vertex_count,
+            instance_count,
+            base_instance,
+            base_vertex,
+        };
+        indirect_draws.push(indirect_draw);
+
+        combined_transforms.extend_from_slice(transforms);
+    }
+
+    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("vertex buffer"),
+        contents: bytemuck::cast_slice(&combined_vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("indirect buffer"),
+        contents: bytemuck::cast_slice(&indirect_draws),
+        usage: wgpu::BufferUsages::INDIRECT,
+    });
+
+    let instance_transforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("instance transforms buffer"),
+        contents: bytemuck::cast_slice(&combined_transforms),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let draw_count = indirect_draws.len() as u32;
+
+    IndirectSceneData {
+        vertex_buffer,
+        instance_transforms_buffer,
+        indirect_buffer,
+        draw_count,
+    }
 }
 
-fn create_vertex_buffer(
-    device: &wgpu::Device,
+fn append_vertices(
+    vertices: &mut Vec<shader::VertexInput>,
     geometry: &ldr_tools::LDrawGeometry,
     color_code: u32,
     color_table: &HashMap<u32, LDrawColor>,
-) -> wgpu::Buffer {
+) {
     // TODO: wgsl_to_wgpu should support non strict offset checking for vertex buffer structs.
     // This allows desktop applications to use vec3 for positions.
-    let vertices: Vec<_> = geometry
-        .vertices
-        .iter()
-        .enumerate()
-        .map(|(i, v)| {
-            // Assume faces are already triangulated and not welded.
-            // This means every 3 vertices defines a new face.
-            // TODO: missing color codes?
-            // TODO: publicly expose color handling logic in ldr_tools.
-            // TODO: handle the case where the face color list is empty?
-            let face_color = geometry
-                .face_colors
-                .get(i / 3)
-                .unwrap_or(&geometry.face_colors[0]);
-            let replaced_color = if face_color.color == 16 {
-                color_code
-            } else {
-                face_color.color
-            };
+    for (i, v) in geometry.vertices.iter().enumerate() {
+        // Assume faces are already triangulated and not welded.
+        // This means every 3 vertices defines a new face.
+        // TODO: missing color codes?
+        // TODO: publicly expose color handling logic in ldr_tools.
+        // TODO: handle the case where the face color list is empty?
+        let face_color = geometry
+            .face_colors
+            .get(i / 3)
+            .unwrap_or(&geometry.face_colors[0]);
+        let replaced_color = if face_color.color == 16 {
+            color_code
+        } else {
+            face_color.color
+        };
 
-            let color = color_table
-                .get(&replaced_color)
-                .map(|c| Vec4::from(c.rgba_linear))
-                .unwrap_or(vec4(1.0, 0.0, 1.0, 1.0));
+        let color = color_table
+            .get(&replaced_color)
+            .map(|c| Vec4::from(c.rgba_linear))
+            .unwrap_or(vec4(1.0, 0.0, 1.0, 1.0));
 
-            crate::shader::VertexInput {
-                position: vec4(v.x, v.y, v.z, 1.0),
-                color,
-            }
-        })
-        .collect();
-
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("vertex buffer"),
-        contents: bytemuck::cast_slice(&vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    })
+        let new_vertex = crate::shader::VertexInput {
+            position: vec4(v.x, v.y, v.z, 1.0),
+            color,
+        };
+        vertices.push(new_vertex);
+    }
 }
 
 fn mvp_matrix(
