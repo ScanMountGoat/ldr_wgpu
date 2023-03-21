@@ -27,16 +27,13 @@ struct DrawIndexedIndirect {
 
 struct InstancedMesh {
     mesh: Mesh,
-    instance_count: u32,
     instance_transforms_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
-    bind_group1: crate::shader::bind_groups::BindGroup1,
 }
 
 struct Mesh {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    index_count: u32,
 }
 
 struct State {
@@ -108,7 +105,7 @@ impl State {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Immediate,
+            present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: Vec::new(),
         };
@@ -250,8 +247,6 @@ impl State {
         // Draw the instances of each unique part and color.
         // This allows reusing most of the rendering state for better performance.
         for instanced_mesh in &self.instanced_meshes {
-            instanced_mesh.bind_group1.set(&mut render_pass);
-
             let mesh = &instanced_mesh.mesh;
             render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, instanced_mesh.instance_transforms_buffer.slice(..));
@@ -369,32 +364,13 @@ fn load_instances(
         .map(|((name, color), transforms)| {
             let geometry = &scene.geometry_cache[name];
 
-            let mesh = create_mesh(device, geometry);
+            let mesh = create_mesh(device, geometry, *color, color_table);
             let instance_transforms_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("instance transforms buffer"),
                     contents: bytemuck::cast_slice(&transforms),
                     usage: wgpu::BufferUsages::VERTEX,
                 });
-
-            // TODO: missing color codes?
-            let color = color_table
-                .get(color)
-                .map(|c| Vec4::from(c.rgba_linear))
-                .unwrap_or(vec4(1.0, 0.0, 1.0, 1.0));
-
-            let uniforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("uniforms buffer"),
-                contents: bytemuck::cast_slice(&[crate::shader::Uniforms { color }]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-            let bind_group1 = crate::shader::bind_groups::BindGroup1::from_bindings(
-                device,
-                crate::shader::bind_groups::BindGroupLayout1 {
-                    uniforms: uniforms_buffer.as_entire_buffer_binding(),
-                },
-            );
 
             let instance_count = transforms.len() as u32;
 
@@ -415,27 +391,56 @@ fn load_instances(
 
             InstancedMesh {
                 mesh,
-                instance_count,
                 instance_transforms_buffer,
                 indirect_buffer,
-                bind_group1,
             }
         })
         .collect()
 }
 
-fn create_mesh(device: &wgpu::Device, geometry: &ldr_tools::LDrawGeometry) -> Mesh {
+fn create_mesh(
+    device: &wgpu::Device,
+    geometry: &ldr_tools::LDrawGeometry,
+    color_code: u32,
+    color_table: &HashMap<u32, LDrawColor>,
+) -> Mesh {
     // TODO: wgsl_to_wgpu should support non strict offset checking for vertex buffer structs.
     // This allows desktop applications to use vec3 for positions.
-    let positions: Vec<_> = geometry
+    let vertices: Vec<_> = geometry
         .vertices
         .iter()
-        .map(|v| vec4(v.x, v.y, v.z, 1.0))
+        .enumerate()
+        .map(|(i, v)| {
+            // Assume faces are already triangulated and not welded.
+            // This means every 3 vertices defines a new face.
+            // TODO: missing color codes?
+            // TODO: publicly expose color handling logic in ldr_tools.
+            // TODO: handle the case where the face color list is empty?
+            let face_color = geometry
+                .face_colors
+                .get(i / 3)
+                .unwrap_or(&geometry.face_colors[0]);
+            let replaced_color = if face_color.color == 16 {
+                color_code
+            } else {
+                face_color.color
+            };
+
+            let color = color_table
+                .get(&replaced_color)
+                .map(|c| Vec4::from(c.rgba_linear))
+                .unwrap_or(vec4(1.0, 0.0, 1.0, 1.0));
+
+            crate::shader::VertexInput {
+                position: vec4(v.x, v.y, v.z, 1.0),
+                color,
+            }
+        })
         .collect();
-    // TODO: Add face colors as a vertex attribute.
+
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertex buffer"),
-        contents: bytemuck::cast_slice(&positions),
+        contents: bytemuck::cast_slice(&vertices),
         usage: wgpu::BufferUsages::VERTEX,
     });
 
@@ -449,7 +454,6 @@ fn create_mesh(device: &wgpu::Device, geometry: &ldr_tools::LDrawGeometry) -> Me
     Mesh {
         vertex_buffer,
         index_buffer,
-        index_count: geometry.vertex_indices.len() as u32,
     }
 }
 
@@ -480,6 +484,7 @@ fn main() {
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
+        weld_vertices: false,
         ..Default::default()
     };
     let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
