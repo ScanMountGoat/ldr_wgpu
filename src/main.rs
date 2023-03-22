@@ -11,6 +11,7 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+mod culling;
 mod shader;
 
 // wgpu already provides this type.
@@ -50,6 +51,9 @@ struct State {
     // Render State
     bind_group0: crate::shader::bind_groups::BindGroup0,
     pipeline: wgpu::RenderPipeline,
+
+    culling_bind_group0: crate::culling::bind_groups::BindGroup0,
+    culling_pipeline: wgpu::ComputePipeline,
 
     render_data: IndirectSceneData,
 
@@ -109,38 +113,8 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let shader = crate::shader::create_shader_module(&device);
-        let render_pipeline_layout = crate::shader::create_pipeline_layout(&device);
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[
-                    crate::shader::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                    crate::shader::InstanceInput::vertex_buffer_layout(
-                        wgpu::VertexStepMode::Instance,
-                    ),
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(surface_format.into())],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
+        let pipeline = create_pipeline(&device, surface_format);
+        let culling_pipeline = create_culling_pipeline(&device);
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
@@ -168,6 +142,13 @@ impl State {
             start.elapsed()
         );
 
+        let culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
+            &device,
+            crate::culling::bind_groups::BindGroupLayout0 {
+                draws: render_data.indirect_buffer.as_entire_buffer_binding(),
+            },
+        );
+
         let (depth_texture, depth_view) = create_depth_texture(&device, size);
 
         Self {
@@ -177,6 +158,8 @@ impl State {
             size,
             config,
             pipeline,
+            culling_pipeline,
+            culling_bind_group0,
             bind_group0,
             render_data,
             translation,
@@ -219,8 +202,20 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
+        self.culling_compute_pass(&mut encoder);
+        self.model_pass(&mut encoder, output_view);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Actually draw the frame.
+        output.present();
+
+        Ok(())
+    }
+
+    fn model_pass(&mut self, encoder: &mut wgpu::CommandEncoder, output_view: wgpu::TextureView) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Render Pass"),
+            label: Some("Model Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &output_view,
                 resolve_target: None,
@@ -240,13 +235,18 @@ impl State {
         });
 
         render_pass.set_pipeline(&self.pipeline);
-        self.bind_group0.set(&mut render_pass);
+
+        crate::shader::bind_groups::set_bind_groups(
+            &mut render_pass,
+            crate::shader::bind_groups::BindGroups {
+                bind_group0: &self.bind_group0,
+            },
+        );
 
         // Draw the instances of each unique part and color.
         // This allows reusing most of the rendering state for better performance.
         render_pass.set_vertex_buffer(0, self.render_data.vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.render_data.instance_transforms_buffer.slice(..));
-        // render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
         // Draw each instance with a different transform.
         render_pass.multi_draw_indirect(
@@ -254,14 +254,25 @@ impl State {
             0,
             self.render_data.draw_count,
         );
-        drop(render_pass);
+    }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+    fn culling_compute_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Culling Pass"),
+        });
 
-        // Actually draw the frame.
-        output.present();
+        compute_pass.set_pipeline(&self.culling_pipeline);
+        crate::culling::bind_groups::set_bind_groups(
+            &mut compute_pass,
+            crate::culling::bind_groups::BindGroups {
+                bind_group0: &self.culling_bind_group0,
+            },
+        );
 
-        Ok(())
+        // Assume the workgroup is 1D.
+        let [size_x, _, _] = crate::culling::compute::MAIN_WORKGROUP_SIZE;
+        let count = div_round_up(self.render_data.draw_count, size_x);
+        compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
     // Make this a reusable library that only requires glam?
@@ -327,6 +338,58 @@ impl State {
     }
 }
 
+const fn div_round_up(x: u32, d: u32) -> u32 {
+    (x + d - 1) / d
+}
+
+fn create_culling_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+    let shader = crate::culling::create_shader_module(device);
+    let render_pipeline_layout = crate::culling::create_pipeline_layout(device);
+
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        module: &shader,
+        entry_point: "main",
+    })
+}
+
+fn create_pipeline(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = crate::shader::create_shader_module(device);
+    let render_pipeline_layout = crate::shader::create_pipeline_layout(device);
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Render Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[
+                crate::shader::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
+                crate::shader::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
+            ],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(surface_format.into())],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    })
+}
+
 fn create_depth_texture(
     device: &wgpu::Device,
     size: winit::dpi::PhysicalSize<u32>,
@@ -365,25 +428,23 @@ fn load_render_data(
         let geometry = &scene.geometry_cache[name];
 
         let base_vertex = combined_vertices.len() as u32;
-        let base_instance = combined_transforms.len() as u32;
-
         append_vertices(&mut combined_vertices, geometry, *color, color_table);
-
         let vertex_count = combined_vertices.len() as u32 - base_vertex;
 
-        let instance_count = transforms.len() as u32;
-
         // Each draw specifies the part mesh using an offset and count.
-        // The instance count steps through the transforms buffer.
-        let indirect_draw = DrawIndirect {
-            vertex_count,
-            instance_count,
-            base_instance,
-            base_vertex,
-        };
-        indirect_draws.push(indirect_draw);
+        // The base instance steps through the transforms buffer.
+        // Each draw uses a single instance to allow culling individual draws.
+        for transform in transforms {
+            let draw = DrawIndirect {
+                vertex_count,
+                instance_count: 1,
+                base_instance: combined_transforms.len() as u32,
+                base_vertex,
+            };
+            indirect_draws.push(draw);
 
-        combined_transforms.extend_from_slice(transforms);
+            combined_transforms.push(*transform);
+        }
     }
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -395,7 +456,7 @@ fn load_render_data(
     let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("indirect buffer"),
         contents: bytemuck::cast_slice(&indirect_draws),
-        usage: wgpu::BufferUsages::INDIRECT,
+        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
     });
 
     let instance_transforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

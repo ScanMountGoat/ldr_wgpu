@@ -3,8 +3,14 @@ use std::fmt::Write;
 use wgsl_to_wgpu::{create_shader_module, MatrixVectorTypes, WriteOptions};
 
 fn main() {
-    println!("cargo:rerun-if-changed=src/shader.wgsl");
-    let wgsl_source = std::fs::read_to_string("src/shader.wgsl").unwrap();
+    write_shader("src/shader.wgsl", "shader.wgsl", "src/shader.rs");
+    write_shader("src/culling.wgsl", "culling.wgsl", "src/culling.rs");
+}
+
+fn write_shader(wgsl_path: &str, include_path: &str, output_path: &str) {
+    println!("cargo:rerun-if-changed={wgsl_path}");
+
+    let wgsl_source = std::fs::read_to_string(wgsl_path).unwrap();
 
     // Generate the Rust bindings and write to a file.
     let mut text = String::new();
@@ -12,7 +18,7 @@ fn main() {
     writeln!(&mut text, "// Changes made to this file will not be saved.").unwrap();
     text += &create_shader_module(
         &wgsl_source,
-        "shader.wgsl",
+        include_path,
         WriteOptions {
             derive_bytemuck: true,
             matrix_vector_types: MatrixVectorTypes::Glam,
@@ -21,5 +27,5 @@ fn main() {
     )
     .unwrap();
 
-    std::fs::write("src/shader.rs", text.as_bytes()).unwrap();
+    std::fs::write(output_path, text.as_bytes()).unwrap();
 }
