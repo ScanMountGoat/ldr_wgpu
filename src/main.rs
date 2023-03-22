@@ -14,6 +14,16 @@ use winit::{
 mod culling;
 mod shader;
 
+const Z_NEAR: f32 = 0.1;
+const Z_FAR: f32 = 1000.0;
+
+struct CameraData {
+    mvp_matrix: Mat4,
+    model_view_matrix: Mat4,
+    // https://vkguide.dev/docs/gpudriven/compute_culling/
+    frustum: Vec4,
+}
+
 // wgpu already provides this type.
 // Make our own so we can derive bytemuck.
 #[repr(C)]
@@ -30,6 +40,7 @@ struct DrawIndirect {
 struct IndirectSceneData {
     vertex_buffer: wgpu::Buffer,
     instance_transforms_buffer: wgpu::Buffer,
+    instance_bounds_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
     draw_count: u32,
 }
@@ -52,6 +63,7 @@ struct State {
     bind_group0: crate::shader::bind_groups::BindGroup0,
     pipeline: wgpu::RenderPipeline,
 
+    camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: crate::culling::bind_groups::BindGroup0,
     culling_pipeline: wgpu::ComputePipeline,
 
@@ -118,11 +130,13 @@ impl State {
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
-        let mvp_matrix = mvp_matrix(size, translation, rotation_xyz);
+        let camera_data = calculate_camera_data(size, translation, rotation_xyz);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("uniforms"),
-            contents: bytemuck::cast_slice(&[crate::shader::Camera { mvp_matrix }]),
+            label: Some("camera buffer"),
+            contents: bytemuck::cast_slice(&[crate::shader::Camera {
+                mvp_matrix: camera_data.mvp_matrix,
+            }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -142,10 +156,28 @@ impl State {
             start.elapsed()
         );
 
+        // TODO: just use encase for this to avoid manually handling padding?
+        let camera_culling_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera culling buffer"),
+            contents: bytemuck::cast_slice(&[crate::culling::Camera {
+                z_near: Z_NEAR,
+                z_far: Z_FAR,
+                _pad1: 0.0,
+                _pad2: 0.0,
+                frustum: camera_data.frustum,
+                model_view_matrix: camera_data.model_view_matrix,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
         let culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
             &device,
             crate::culling::bind_groups::BindGroupLayout0 {
                 draws: render_data.indirect_buffer.as_entire_buffer_binding(),
+                bounding_spheres: render_data
+                    .instance_bounds_buffer
+                    .as_entire_buffer_binding(),
+                camera: camera_culling_buffer.as_entire_buffer_binding(),
             },
         );
 
@@ -167,14 +199,32 @@ impl State {
             camera_buffer,
             depth_texture,
             depth_view,
+            camera_culling_buffer,
             input_state: Default::default(),
         }
     }
 
     fn update_camera(&self, size: winit::dpi::PhysicalSize<u32>) {
-        let mvp_matrix = mvp_matrix(size, self.translation, self.rotation_xyz);
-        self.queue
-            .write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[mvp_matrix]));
+        let camera_data = calculate_camera_data(size, self.translation, self.rotation_xyz);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[crate::shader::Camera {
+                mvp_matrix: camera_data.mvp_matrix,
+            }]),
+        );
+        self.queue.write_buffer(
+            &self.camera_culling_buffer,
+            0,
+            bytemuck::cast_slice(&[crate::culling::Camera {
+                z_near: Z_NEAR,
+                z_far: Z_FAR,
+                _pad1: 0.0,
+                _pad2: 0.0,
+                frustum: camera_data.frustum,
+                model_view_matrix: camera_data.model_view_matrix,
+            }]),
+        );
     }
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -423,8 +473,11 @@ fn load_render_data(
     let mut combined_vertices = Vec::new();
     let mut combined_transforms = Vec::new();
     let mut indirect_draws = Vec::new();
+    let mut instance_bounds = Vec::new();
 
     for ((name, color), transforms) in &scene.geometry_world_transforms {
+        // Create separate vertex data if a part has multiple colors.
+        // This is necessary since we store face colors per vertex.
         let geometry = &scene.geometry_cache[name];
 
         let base_vertex = combined_vertices.len() as u32;
@@ -442,6 +495,22 @@ fn load_render_data(
                 base_vertex,
             };
             indirect_draws.push(draw);
+
+            // TODO: Find an efficient way to potentially update this each frame.
+            // TODO: Create a struct for the bounding data.
+            let points_world: Vec<_> = geometry
+                .vertices
+                .iter()
+                .map(|v| transform.transform_point3(*v))
+                .collect();
+            let sphere_center =
+                points_world.iter().sum::<Vec3>() / points_world.len().max(1) as f32;
+            let sphere_radius = points_world
+                .iter()
+                .map(|v| v.distance(sphere_center))
+                .reduce(f32::max)
+                .unwrap_or_default();
+            instance_bounds.push(sphere_center.extend(sphere_radius));
 
             combined_transforms.push(*transform);
         }
@@ -465,11 +534,18 @@ fn load_render_data(
         usage: wgpu::BufferUsages::VERTEX,
     });
 
+    let instance_bounds_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("instance bounds buffer"),
+        contents: bytemuck::cast_slice(&instance_bounds),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     let draw_count = indirect_draws.len() as u32;
 
     IndirectSceneData {
         vertex_buffer,
         instance_transforms_buffer,
+        instance_bounds_buffer,
         indirect_buffer,
         draw_count,
     }
@@ -512,11 +588,11 @@ fn append_vertices(
     }
 }
 
-fn mvp_matrix(
+fn calculate_camera_data(
     size: winit::dpi::PhysicalSize<u32>,
     translation: glam::Vec3,
     rotation: glam::Vec3,
-) -> glam::Mat4 {
+) -> CameraData {
     let aspect = size.width as f32 / size.height as f32;
 
     // wgpu and LDraw have different coordinate systems.
@@ -526,9 +602,24 @@ fn mvp_matrix(
         * glam::Mat4::from_rotation_x(rotation.x)
         * glam::Mat4::from_rotation_y(rotation.y)
         * axis_correction;
-    let perspective_matrix = glam::Mat4::perspective_rh(0.5, aspect, 0.1, 1000.0);
+    let perspective_matrix = glam::Mat4::perspective_rh(0.5, aspect, Z_NEAR, Z_FAR);
 
-    perspective_matrix * model_view_matrix
+    let mvp_matrix = perspective_matrix * model_view_matrix;
+
+    // Calculate camera frustum data for culling.
+    // https://github.com/zeux/niagara/blob/3fafe000ba8fe6e309b41e915b81242b4ca3db28/src/niagara.cpp#L836-L852
+    let perspective_t = perspective_matrix.transpose();
+    // x + w < 0
+    let frustum_x = (perspective_t.col(3) + perspective_t.col(0)).normalize();
+    // y + w < 0
+    let frustum_y = (perspective_t.col(3) + perspective_t.col(1)).normalize();
+    let frustum = vec4(frustum_x.x, frustum_x.z, frustum_y.y, frustum_y.z);
+
+    CameraData {
+        mvp_matrix,
+        frustum,
+        model_view_matrix,
+    }
 }
 
 fn main() {

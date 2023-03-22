@@ -28,10 +28,49 @@ const _: () = assert!(
     memoffset::offset_of!(DrawIndirect, base_instance) == 12,
     "offset of DrawIndirect.base_instance does not match WGSL"
 );
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Camera {
+    pub z_near: f32,
+    pub z_far: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
+    pub frustum: glam::Vec4,
+    pub model_view_matrix: glam::Mat4,
+}
+const _: () = assert!(
+    std::mem::size_of:: < Camera > () == 96, "size of Camera does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, z_near) == 0,
+    "offset of Camera.z_near does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, z_far) == 4,
+    "offset of Camera.z_far does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, _pad1) == 8,
+    "offset of Camera._pad1 does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, _pad2) == 12,
+    "offset of Camera._pad2 does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, frustum) == 16,
+    "offset of Camera.frustum does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, model_view_matrix) == 32,
+    "offset of Camera.model_view_matrix does not match WGSL"
+);
 pub mod bind_groups {
     pub struct BindGroup0(wgpu::BindGroup);
     pub struct BindGroupLayout0<'a> {
         pub draws: wgpu::BufferBinding<'a>,
+        pub bounding_spheres: wgpu::BufferBinding<'a>,
+        pub camera: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -43,6 +82,28 @@ pub mod bind_groups {
                     ty: wgpu::BufferBindingType::Storage {
                         read_only: false,
                     },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: true,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -64,6 +125,16 @@ pub mod bind_groups {
                             wgpu::BindGroupEntry {
                                 binding: 0,
                                 resource: wgpu::BindingResource::Buffer(bindings.draws),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.bounding_spheres,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Buffer(bindings.camera),
                             },
                         ],
                         label: None,
