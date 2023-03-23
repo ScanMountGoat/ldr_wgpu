@@ -5,6 +5,7 @@ use wgsl_to_wgpu::{create_shader_module, MatrixVectorTypes, WriteOptions};
 fn main() {
     write_shader("src/shader.wgsl", "shader.wgsl", "src/shader.rs");
     write_shader("src/culling.wgsl", "culling.wgsl", "src/culling.rs");
+    write_shader("src/depth_pyramid.wgsl", "depth_pyramid.wgsl", "src/depth_pyramid.rs");
 }
 
 fn write_shader(wgsl_path: &str, include_path: &str, output_path: &str) {

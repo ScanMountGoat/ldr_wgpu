@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroU32};
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
@@ -11,7 +11,9 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+// TODO: Create a shader module.
 mod culling;
+mod depth_pyramid;
 mod shader;
 
 const Z_NEAR: f32 = 0.1;
@@ -59,6 +61,10 @@ struct State {
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
 
+    // Store the texture separately since depth maps can't have mipmaps.
+    depth_pyramid: wgpu::Texture,
+    depth_pyramid_mips: Vec<wgpu::TextureView>,
+
     // Render State
     bind_group0: crate::shader::bind_groups::BindGroup0,
     pipeline: wgpu::RenderPipeline,
@@ -66,6 +72,9 @@ struct State {
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: crate::culling::bind_groups::BindGroup0,
     culling_pipeline: wgpu::ComputePipeline,
+
+    depth_pyramid_pipeline: wgpu::ComputePipeline,
+    depth_pyramid_bind_group0: crate::depth_pyramid::bind_groups::BindGroup0,
 
     render_data: IndirectSceneData,
 
@@ -104,7 +113,8 @@ impl State {
                 &wgpu::DeviceDescriptor {
                     label: None,
                     features: wgpu::Features::MULTI_DRAW_INDIRECT
-                        | wgpu::Features::INDIRECT_FIRST_INSTANCE,
+                        | wgpu::Features::INDIRECT_FIRST_INSTANCE
+                        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -183,6 +193,21 @@ impl State {
 
         let (depth_texture, depth_view) = create_depth_texture(&device, size);
 
+        // TODO: how to update this when resizing the window?
+        let (depth_pyramid, depth_pyramid_mips) = create_depth_pyramid_texture(&device, size);
+
+        let depth_pyramid_pipeline = create_depth_pyramid_pipeline(&device);
+
+        // TODO: Set this up for each mip level.
+        // TODO: The base mip level reads from the actual depth texture.
+        let depth_pyramid_bind_group0 = depth_pyramid::bind_groups::BindGroup0::from_bindings(
+            &device,
+            depth_pyramid::bind_groups::BindGroupLayout0 {
+                input: &depth_pyramid_mips[0],
+                output: &depth_pyramid_mips[1],
+            },
+        );
+
         Self {
             surface,
             device,
@@ -200,6 +225,10 @@ impl State {
             depth_texture,
             depth_view,
             camera_culling_buffer,
+            depth_pyramid,
+            depth_pyramid_mips,
+            depth_pyramid_pipeline,
+            depth_pyramid_bind_group0,
             input_state: Default::default(),
         }
     }
@@ -229,6 +258,7 @@ impl State {
 
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
+            // Update each resource that depends on window size.
             self.size = new_size;
             self.config.width = new_size.width;
             self.config.height = new_size.height;
@@ -237,6 +267,11 @@ impl State {
             let (depth_texture, depth_view) = create_depth_texture(&self.device, new_size);
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
+
+            let (depth_pyramid, depth_pyramid_mips) =
+                create_depth_pyramid_texture(&self.device, new_size);
+            self.depth_pyramid = depth_pyramid;
+            self.depth_pyramid_mips = depth_pyramid_mips;
         }
     }
 
@@ -254,6 +289,7 @@ impl State {
 
         self.culling_compute_pass(&mut encoder);
         self.model_pass(&mut encoder, output_view);
+        self.depth_pyramid_compute_pass(&mut encoder);
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -323,6 +359,29 @@ impl State {
         let [size_x, _, _] = crate::culling::compute::MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
+    }
+
+    fn depth_pyramid_compute_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        // Make the depth pyramid for the next frame using the current dpeht.
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Depth Pyramid Pass"),
+        });
+
+        compute_pass.set_pipeline(&self.depth_pyramid_pipeline);
+        // TODO: maintain bind groups for each mip level.
+        crate::depth_pyramid::bind_groups::set_bind_groups(
+            &mut compute_pass,
+            crate::depth_pyramid::bind_groups::BindGroups {
+                bind_group0: &self.depth_pyramid_bind_group0,
+            },
+        );
+
+        // Assume the workgroup is 2D.
+        let [size_x, size_y, _] = crate::depth_pyramid::compute::MAIN_WORKGROUP_SIZE;
+        let count_x = div_round_up(self.render_data.draw_count, size_x);
+        let count_y = div_round_up(self.render_data.draw_count, size_y);
+
+        compute_pass.dispatch_workgroups(count_x, count_y, 1);
     }
 
     // Make this a reusable library that only requires glam?
@@ -397,7 +456,19 @@ fn create_culling_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
     let render_pipeline_layout = crate::culling::create_pipeline_layout(device);
 
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Render Pipeline"),
+        label: Some("Culling Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        module: &shader,
+        entry_point: "main",
+    })
+}
+
+fn create_depth_pyramid_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+    let shader = crate::depth_pyramid::create_shader_module(device);
+    let render_pipeline_layout = crate::depth_pyramid::create_pipeline_layout(device);
+
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Depth Pyramid Pipeline"),
         layout: Some(&render_pipeline_layout),
         module: &shader,
         entry_point: "main",
@@ -462,6 +533,40 @@ fn create_depth_texture(
     let depth_view = depth_texture.create_view(&Default::default());
 
     (depth_texture, depth_view)
+}
+
+fn create_depth_pyramid_texture(
+    device: &wgpu::Device,
+    size: winit::dpi::PhysicalSize<u32>,
+) -> (wgpu::Texture, Vec<wgpu::TextureView>) {
+    let size = wgpu::Extent3d {
+        width: size.width,
+        height: size.height,
+        depth_or_array_layers: 1,
+    };
+    let mip_level_count = size.max_mips(wgpu::TextureDimension::D2);
+    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("depth texture"),
+        size,
+        mip_level_count,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
+    });
+
+    let mip_views = (0..mip_level_count)
+        .map(|mip| {
+            depth_texture.create_view(&wgpu::TextureViewDescriptor {
+                base_mip_level: mip,
+                mip_level_count: Some(NonZeroU32::new(1).unwrap()),
+                ..Default::default()
+            })
+        })
+        .collect();
+
+    (depth_texture, mip_views)
 }
 
 fn load_render_data(
