@@ -13,9 +13,7 @@ pub mod bind_groups {
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float {
-                        filterable: true,
-                    },
+                    sample_type: wgpu::TextureSampleType::Depth,
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -78,7 +76,7 @@ pub mod compute {
     pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [16, 16, 1];
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
-    let source = std::borrow::Cow::Borrowed(include_str!("depth_pyramid.wgsl"));
+    let source = std::borrow::Cow::Borrowed(include_str!("blit_depth.wgsl"));
     device
         .create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,

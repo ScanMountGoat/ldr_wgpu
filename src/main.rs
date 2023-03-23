@@ -12,6 +12,7 @@ use winit::{
 };
 
 // TODO: Create a shader module.
+mod blit_depth;
 mod culling;
 mod depth_pyramid;
 mod shader;
@@ -61,9 +62,10 @@ struct State {
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
 
-    // Store the texture separately since depth maps can't have mipmaps.
-    depth_pyramid: wgpu::Texture,
-    depth_pyramid_mips: Vec<wgpu::TextureView>,
+    // Store the texture separately since depth attachments can't have mipmaps.
+    depth_pyramid_pipeline: wgpu::ComputePipeline,
+    blit_depth_pipeline: wgpu::ComputePipeline,
+    depth_pyramid: DepthPyramid,
 
     // Render State
     bind_group0: crate::shader::bind_groups::BindGroup0,
@@ -73,12 +75,16 @@ struct State {
     culling_bind_group0: crate::culling::bind_groups::BindGroup0,
     culling_pipeline: wgpu::ComputePipeline,
 
-    depth_pyramid_pipeline: wgpu::ComputePipeline,
-    depth_pyramid_bind_group0: crate::depth_pyramid::bind_groups::BindGroup0,
-
     render_data: IndirectSceneData,
 
     input_state: InputState,
+}
+
+struct DepthPyramid {
+    pyramid: wgpu::Texture,
+    mips: Vec<wgpu::TextureView>,
+    base_bind_group: crate::blit_depth::bind_groups::BindGroup0,
+    mip_bind_groups: Vec<crate::depth_pyramid::bind_groups::BindGroup0>,
 }
 
 #[derive(Default)]
@@ -193,20 +199,10 @@ impl State {
 
         let (depth_texture, depth_view) = create_depth_texture(&device, size);
 
-        // TODO: how to update this when resizing the window?
-        let (depth_pyramid, depth_pyramid_mips) = create_depth_pyramid_texture(&device, size);
-
         let depth_pyramid_pipeline = create_depth_pyramid_pipeline(&device);
+        let blit_depth_pipeline = create_blit_depth_pipeline(&device);
 
-        // TODO: Set this up for each mip level.
-        // TODO: The base mip level reads from the actual depth texture.
-        let depth_pyramid_bind_group0 = depth_pyramid::bind_groups::BindGroup0::from_bindings(
-            &device,
-            depth_pyramid::bind_groups::BindGroupLayout0 {
-                input: &depth_pyramid_mips[0],
-                output: &depth_pyramid_mips[1],
-            },
-        );
+        let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
 
         Self {
             surface,
@@ -226,9 +222,8 @@ impl State {
             depth_view,
             camera_culling_buffer,
             depth_pyramid,
-            depth_pyramid_mips,
             depth_pyramid_pipeline,
-            depth_pyramid_bind_group0,
+            blit_depth_pipeline,
             input_state: Default::default(),
         }
     }
@@ -268,10 +263,7 @@ impl State {
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
 
-            let (depth_pyramid, depth_pyramid_mips) =
-                create_depth_pyramid_texture(&self.device, new_size);
-            self.depth_pyramid = depth_pyramid;
-            self.depth_pyramid_mips = depth_pyramid_mips;
+            self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
         }
     }
 
@@ -362,26 +354,47 @@ impl State {
     }
 
     fn depth_pyramid_compute_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        // Make the depth pyramid for the next frame using the current dpeht.
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Depth Pyramid Pass"),
         });
 
-        compute_pass.set_pipeline(&self.depth_pyramid_pipeline);
-        // TODO: maintain bind groups for each mip level.
-        crate::depth_pyramid::bind_groups::set_bind_groups(
+        // Copy the base level.
+        compute_pass.set_pipeline(&self.blit_depth_pipeline);
+        crate::blit_depth::bind_groups::set_bind_groups(
             &mut compute_pass,
-            crate::depth_pyramid::bind_groups::BindGroups {
-                bind_group0: &self.depth_pyramid_bind_group0,
+            crate::blit_depth::bind_groups::BindGroups {
+                bind_group0: &self.depth_pyramid.base_bind_group,
             },
         );
 
         // Assume the workgroup is 2D.
-        let [size_x, size_y, _] = crate::depth_pyramid::compute::MAIN_WORKGROUP_SIZE;
-        let count_x = div_round_up(self.render_data.draw_count, size_x);
-        let count_y = div_round_up(self.render_data.draw_count, size_y);
+        let [size_x, size_y, _] = crate::blit_depth::compute::MAIN_WORKGROUP_SIZE;
+        let count_x = div_round_up(self.size.width, size_x);
+        let count_y = div_round_up(self.size.height, size_y);
 
         compute_pass.dispatch_workgroups(count_x, count_y, 1);
+
+        // Make the depth pyramid for the next frame using the current depth.
+        // Each dispatch generates one mip level of the pyramid.
+        compute_pass.set_pipeline(&self.depth_pyramid_pipeline);
+        for (i, bind_group0) in self.depth_pyramid.mip_bind_groups.iter().enumerate() {
+            // The first level is copied separately from the depth texture.
+            let mip = i + 1;
+            let mip_width = (self.size.width >> mip).max(1);
+            let mip_height = (self.size.height >> mip).max(1);
+
+            crate::depth_pyramid::bind_groups::set_bind_groups(
+                &mut compute_pass,
+                crate::depth_pyramid::bind_groups::BindGroups { bind_group0 },
+            );
+
+            // Assume the workgroup is 2D.
+            let [size_x, size_y, _] = crate::depth_pyramid::compute::MAIN_WORKGROUP_SIZE;
+            let count_x = div_round_up(mip_width, size_x);
+            let count_y = div_round_up(mip_height, size_y);
+
+            compute_pass.dispatch_workgroups(count_x, count_y, 1);
+        }
     }
 
     // Make this a reusable library that only requires glam?
@@ -447,6 +460,47 @@ impl State {
     }
 }
 
+fn create_depth_pyramid(
+    device: &wgpu::Device,
+    size: winit::dpi::PhysicalSize<u32>,
+    base_depth: &wgpu::TextureView,
+) -> DepthPyramid {
+    let (pyramid, pyramid_mips) = create_depth_pyramid_texture(device, size);
+    let pyramid_bind_groups = depth_pyramid_bind_groups(device, &pyramid_mips);
+    let base_bind_group = crate::blit_depth::bind_groups::BindGroup0::from_bindings(
+        device,
+        crate::blit_depth::bind_groups::BindGroupLayout0 {
+            input: base_depth,
+            output: &pyramid_mips[0],
+        },
+    );
+
+    DepthPyramid {
+        pyramid,
+        mips: pyramid_mips,
+        base_bind_group,
+        mip_bind_groups: pyramid_bind_groups,
+    }
+}
+
+fn depth_pyramid_bind_groups(
+    device: &wgpu::Device,
+    mips: &[wgpu::TextureView],
+) -> Vec<depth_pyramid::bind_groups::BindGroup0> {
+    // The base level is handled separately.
+    (1..mips.len())
+        .map(|i| {
+            depth_pyramid::bind_groups::BindGroup0::from_bindings(
+                device,
+                depth_pyramid::bind_groups::BindGroupLayout0 {
+                    input: &mips[i - 1],
+                    output: &mips[i],
+                },
+            )
+        })
+        .collect()
+}
+
 const fn div_round_up(x: u32, d: u32) -> u32 {
     (x + d - 1) / d
 }
@@ -469,6 +523,18 @@ fn create_depth_pyramid_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline
 
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Depth Pyramid Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        module: &shader,
+        entry_point: "main",
+    })
+}
+
+fn create_blit_depth_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+    let shader = crate::blit_depth::create_shader_module(device);
+    let render_pipeline_layout = crate::blit_depth::create_pipeline_layout(device);
+
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Blit Depth Pipeline"),
         layout: Some(&render_pipeline_layout),
         module: &shader,
         entry_point: "main",
@@ -526,7 +592,7 @@ fn create_depth_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
 
@@ -552,7 +618,7 @@ fn create_depth_pyramid_texture(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::R32Float,
-        usage: wgpu::TextureUsages::STORAGE_BINDING,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
 
