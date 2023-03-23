@@ -771,8 +771,6 @@ fn append_vertices(
     color_code: u32,
     color_table: &HashMap<u32, LDrawColor>,
 ) {
-    // TODO: wgsl_to_wgpu should support non strict offset checking for vertex buffer structs.
-    // This allows desktop applications to use vec3 for positions.
     for (i, v) in geometry.vertices.iter().enumerate() {
         // Assume faces are already triangulated and not welded.
         // This means every 3 vertices defines a new face.
@@ -791,11 +789,14 @@ fn append_vertices(
 
         let color = color_table
             .get(&replaced_color)
-            .map(|c| Vec4::from(c.rgba_linear))
-            .unwrap_or(vec4(1.0, 0.0, 1.0, 1.0));
+            .map(|c| {
+                // TODO: What is the GPU endianness?
+                u32::from_le_bytes(c.rgba_linear.map(|f| (f * 255.0) as u8))
+            })
+            .unwrap_or(0xFFFFFFFF);
 
         let new_vertex = crate::shader::VertexInput {
-            position: vec4(v.x, v.y, v.z, 1.0),
+            position: *v,
             color,
         };
         vertices.push(new_vertex);

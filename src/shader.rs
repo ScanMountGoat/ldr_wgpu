@@ -15,11 +15,11 @@ const _: () = assert!(
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct VertexInput {
-    pub position: glam::Vec4,
-    pub color: glam::Vec4,
+    pub position: glam::Vec3,
+    pub color: u32,
 }
 const _: () = assert!(
-    std::mem::size_of:: < VertexInput > () == 32,
+    std::mem::size_of:: < VertexInput > () == 16,
     "size of VertexInput does not match WGSL"
 );
 const _: () = assert!(
@@ -27,7 +27,7 @@ const _: () = assert!(
     "offset of VertexInput.position does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(VertexInput, color) == 16,
+    memoffset::offset_of!(VertexInput, color) == 12,
     "offset of VertexInput.color does not match WGSL"
 );
 #[repr(C)]
@@ -117,12 +117,12 @@ pub mod vertex {
     impl super::VertexInput {
         pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
             wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
+                format: wgpu::VertexFormat::Float32x3,
                 offset: memoffset::offset_of!(super::VertexInput, position) as u64,
                 shader_location: 0,
             },
             wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
+                format: wgpu::VertexFormat::Uint32,
                 offset: memoffset::offset_of!(super::VertexInput, color) as u64,
                 shader_location: 1,
             },

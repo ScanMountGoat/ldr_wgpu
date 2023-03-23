@@ -6,8 +6,8 @@ struct Camera {
 var<uniform> camera: Camera;
 
 struct VertexInput {
-    @location(0) position: vec4<f32>,
-    @location(1) color: vec4<f32>,
+    @location(0) position: vec3<f32>,
+    @location(1) color: u32,
 }
 
 struct InstanceInput {
@@ -35,8 +35,7 @@ fn vs_main(
     );
     var out: VertexOutput;
     out.clip_position = camera.mvp_matrix * model_matrix * vec4<f32>(model.position.xyz, 1.0);
-    out.color = model.color;
-
+    out.color = unpack4x8unorm(model.color);
     return out;
 }
 
