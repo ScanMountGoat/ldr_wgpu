@@ -25,6 +25,8 @@ struct CameraData {
     model_view_matrix: Mat4,
     // https://vkguide.dev/docs/gpudriven/compute_culling/
     frustum: Vec4,
+    p00: f32,
+    p11: f32,
 }
 
 // wgpu already provides this type.
@@ -66,6 +68,7 @@ struct State {
     depth_pyramid_pipeline: wgpu::ComputePipeline,
     blit_depth_pipeline: wgpu::ComputePipeline,
     depth_pyramid: DepthPyramid,
+    depth_pyramid_sampler: wgpu::Sampler,
 
     // Render State
     bind_group0: crate::shader::bind_groups::BindGroup0,
@@ -73,6 +76,7 @@ struct State {
 
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: crate::culling::bind_groups::BindGroup0,
+    culling_bind_group1: crate::culling::bind_groups::BindGroup1,
     culling_pipeline: wgpu::ComputePipeline,
 
     render_data: IndirectSceneData,
@@ -82,6 +86,7 @@ struct State {
 
 struct DepthPyramid {
     pyramid: wgpu::Texture,
+    pyramid_view: wgpu::TextureView,
     mips: Vec<wgpu::TextureView>,
     base_bind_group: crate::blit_depth::bind_groups::BindGroup0,
     mip_bind_groups: Vec<crate::depth_pyramid::bind_groups::BindGroup0>,
@@ -178,24 +183,15 @@ impl State {
             contents: bytemuck::cast_slice(&[crate::culling::Camera {
                 z_near: Z_NEAR,
                 z_far: Z_FAR,
-                _pad1: 0.0,
-                _pad2: 0.0,
+                p00: camera_data.p00,
+                p11: camera_data.p11,
                 frustum: camera_data.frustum,
                 model_view_matrix: camera_data.model_view_matrix,
+                // Assume the pyramid shares the dimensions of the window.
+                pyramid_dimensions: vec4(size.width as f32, size.height as f32, 0.0, 0.0),
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-
-        let culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
-            &device,
-            crate::culling::bind_groups::BindGroupLayout0 {
-                draws: render_data.indirect_buffer.as_entire_buffer_binding(),
-                bounding_spheres: render_data
-                    .instance_bounds_buffer
-                    .as_entire_buffer_binding(),
-                camera: camera_culling_buffer.as_entire_buffer_binding(),
-            },
-        );
 
         let (depth_texture, depth_view) = create_depth_texture(&device, size);
 
@@ -203,6 +199,35 @@ impl State {
         let blit_depth_pipeline = create_blit_depth_pipeline(&device);
 
         let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
+
+        let depth_pyramid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("depth pyramid sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
+            &device,
+            crate::culling::bind_groups::BindGroupLayout0 {
+                camera: camera_culling_buffer.as_entire_buffer_binding(),
+                depth_pyramid: &depth_pyramid.pyramid_view,
+                depth_pyramid_sampler: &depth_pyramid_sampler,
+            },
+        );
+
+        let culling_bind_group1 = crate::culling::bind_groups::BindGroup1::from_bindings(
+            &device,
+            crate::culling::bind_groups::BindGroupLayout1 {
+                draws: render_data.indirect_buffer.as_entire_buffer_binding(),
+                bounding_spheres: render_data
+                    .instance_bounds_buffer
+                    .as_entire_buffer_binding(),
+            },
+        );
 
         Self {
             surface,
@@ -213,6 +238,7 @@ impl State {
             pipeline,
             culling_pipeline,
             culling_bind_group0,
+            culling_bind_group1,
             bind_group0,
             render_data,
             translation,
@@ -224,6 +250,7 @@ impl State {
             depth_pyramid,
             depth_pyramid_pipeline,
             blit_depth_pipeline,
+            depth_pyramid_sampler,
             input_state: Default::default(),
         }
     }
@@ -243,10 +270,12 @@ impl State {
             bytemuck::cast_slice(&[crate::culling::Camera {
                 z_near: Z_NEAR,
                 z_far: Z_FAR,
-                _pad1: 0.0,
-                _pad2: 0.0,
+                p00: camera_data.p00,
+                p11: camera_data.p11,
                 frustum: camera_data.frustum,
                 model_view_matrix: camera_data.model_view_matrix,
+                // Assume the pyramid shares the dimensions of the window.
+                pyramid_dimensions: vec4(size.width as f32, size.height as f32, 0.0, 0.0),
             }]),
         );
     }
@@ -264,6 +293,16 @@ impl State {
             self.depth_view = depth_view;
 
             self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
+
+            // The textures were updated, so use views pointing to the new textures.
+            self.culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
+                &self.device,
+                crate::culling::bind_groups::BindGroupLayout0 {
+                    camera: self.camera_culling_buffer.as_entire_buffer_binding(),
+                    depth_pyramid: &self.depth_pyramid.pyramid_view,
+                    depth_pyramid_sampler: &self.depth_pyramid_sampler,
+                },
+            );
         }
     }
 
@@ -344,6 +383,7 @@ impl State {
             &mut compute_pass,
             crate::culling::bind_groups::BindGroups {
                 bind_group0: &self.culling_bind_group0,
+                bind_group1: &self.culling_bind_group1,
             },
         );
 
@@ -475,8 +515,11 @@ fn create_depth_pyramid(
         },
     );
 
+    let pyramid_view = pyramid.create_view(&wgpu::TextureViewDescriptor::default());
+
     DepthPyramid {
         pyramid,
+        pyramid_view,
         mips: pyramid_mips,
         base_bind_group,
         mip_bind_groups: pyramid_bind_groups,
@@ -786,10 +829,16 @@ fn calculate_camera_data(
     let frustum_y = (perspective_t.col(3) + perspective_t.col(1)).normalize();
     let frustum = vec4(frustum_x.x, frustum_x.z, frustum_y.y, frustum_y.z);
 
+    // Used for occlusion based culling.
+    let p00 = perspective_matrix.col(0).x;
+    let p11 = perspective_matrix.col(1).y;
+
     CameraData {
         mvp_matrix,
         frustum,
         model_view_matrix,
+        p00,
+        p11,
     }
 }
 

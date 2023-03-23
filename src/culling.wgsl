@@ -1,3 +1,25 @@
+// frustum based culling adapted from here.
+// https://vkguide.dev/docs/gpudriven/compute_culling/
+struct Camera {
+    z_near: f32,
+    z_far: f32,
+    p00: f32,
+    p11: f32,
+    frustum: vec4<f32>,
+    model_view_matrix: mat4x4<f32>,
+    pyramid_dimensions: vec4<f32>,
+}
+
+@group(0) @binding(0)
+var<uniform> camera: Camera;
+
+// Mipmapped version of the depth map.
+@group(0) @binding(1)
+var depth_pyramid: texture_2d<f32>;
+
+@group(0) @binding(2)
+var depth_pyramid_sampler: sampler;
+
 struct DrawIndirect {
     vertex_count: u32,
     instance_count: u32,
@@ -5,25 +27,11 @@ struct DrawIndirect {
     base_instance: u32,
 }
 
-@group(0) @binding(0)
+@group(1) @binding(0)
 var<storage, read_write> draws: array<DrawIndirect>;
 
-@group(0) @binding(1)
+@group(1) @binding(1)
 var<storage, read> bounding_spheres: array<vec4<f32>>;
-
-// frustum based culling adapted from here.
-// https://vkguide.dev/docs/gpudriven/compute_culling/
-struct Camera {
-    z_near: f32,
-    z_far: f32,
-    _pad1: f32,
-    _pad2: f32,
-    frustum: vec4<f32>,
-    model_view_matrix: mat4x4<f32>,
-}
-
-@group(0) @binding(2)
-var<uniform> camera: Camera;
 
 fn is_within_view_frustum(index: u32) -> bool {
 	//grab sphere cull data from the object buffer
@@ -45,8 +53,66 @@ fn is_within_view_frustum(index: u32) -> bool {
     if (-center.z + radius < camera.z_near || -center.z - radius > camera.z_far) {
         return false;
     }
-	
+
 	return true;
+}
+
+// Adapted from the code from niagara:
+// https://github.com/zeux/niagara/blob/master/src/shaders/math.h
+// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
+// Original paper link: https://jcgt.org/published/0002/02/05/
+fn project_sphere(c: vec3<f32>, r: f32, z_near: f32, p00: f32, p11: f32) -> vec4<f32> {
+	let cr = c * r;
+	let czr2 = c.z * c.z - r * r;
+
+	let vx = sqrt(c.x * c.x + czr2);
+	let minx = (vx * c.x - cr.z) / (vx * c.z + cr.x);
+	let maxx = (vx * c.x + cr.z) / (vx * c.z - cr.x);
+
+	let vy = sqrt(c.y * c.y + czr2);
+	let miny = (vy * c.y - cr.z) / (vy * c.z + cr.y);
+	let maxy = (vy * c.y + cr.z) / (vy * c.z - cr.y);
+
+	var aabb = vec4(minx * p00, miny * p11, maxx * p00, maxy * p11);
+	aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
+
+	return aabb;
+}
+
+// https://vkguide.dev/docs/gpudriven/compute_culling/
+fn is_occluded(index: u32) -> bool {
+    // Occlusion based culling using axis aligned bounding boxes.
+    let bounding_sphere = bounding_spheres[index];
+    let center = bounding_sphere.xyz;
+    let radius = bounding_sphere.w;
+
+    // Project the cull sphere into screenspace coordinates.
+    let aabb = project_sphere(center, radius, camera.z_near, camera.p00, camera.p11);
+
+    let width = (aabb.z - aabb.x) * camera.pyramid_dimensions.x;
+    let height = (aabb.w - aabb.y) * camera.pyramid_dimensions.y;
+
+    let level = floor(log2(max(width, height)));
+
+    // Compute the minimum depth of a 2x2 texel quad.
+    // This works since the depth pyramid uses min for reduction.
+    let coords = (aabb.xy + aabb.zw) * 0.5;
+    let depth = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, coords, level).x;
+    let depth_sphere = camera.z_near / (center.z - radius);
+
+    return depth_sphere > depth;
+}
+
+fn is_visible(index: u32) -> bool {
+    if (!is_within_view_frustum(index)) {
+        return false;
+    }
+
+    if (is_occluded(index)) {
+        return false;
+    }
+
+    return true;
 }
 
 @compute
@@ -56,7 +122,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let i = global_id.x;
     draws[i].instance_count = 1u;
 
-    if (!is_within_view_frustum(i)) {
+    if (!is_visible(i)) {
         draws[i].instance_count = 0u;
     }
 }

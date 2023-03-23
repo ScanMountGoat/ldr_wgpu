@@ -12,12 +12,10 @@ pub mod bind_groups {
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float {
-                        filterable: true,
-                    },
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::ReadOnly,
+                    format: wgpu::TextureFormat::R32Float,
                     view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
                 },
                 count: None,
             },
