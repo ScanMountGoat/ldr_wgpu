@@ -80,10 +80,13 @@ fn is_occluded(center: vec3<f32>, radius: f32) -> bool {
     // Project the cull sphere into screenspace coordinates.
     let aabb = project_sphere(center, radius, camera.z_near, camera.p00, camera.p11);
 
+    // Calculate the covered area in pixels for the base mip level.
     let width = (aabb.z - aabb.x) * camera.pyramid_dimensions.x;
     let height = (aabb.w - aabb.y) * camera.pyramid_dimensions.y;
 
-    let level = log2(max(width, height));
+    // Calculate the mip level that will be covered by 2x2 pixels.
+    // 4x4 pixels on the base level should use mip level 1.
+    let level = ceil(log2(max(width, height) / 2.0));
 
     // Compute the max depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses max for reduction.
