@@ -6,7 +6,8 @@ struct Camera {
     p00: f32,
     p11: f32,
     frustum: vec4<f32>,
-    model_view_matrix: mat4x4<f32>,
+    view: mat4x4<f32>,
+    view_projection: mat4x4<f32>,
     pyramid_dimensions: vec4<f32>,
 }
 
@@ -33,13 +34,7 @@ var<storage, read_write> draws: array<DrawIndirect>;
 @group(1) @binding(1)
 var<storage, read> bounding_spheres: array<vec4<f32>>;
 
-fn is_within_view_frustum(index: u32) -> bool {
-	//grab sphere cull data from the object buffer
-	let bounding_sphere = bounding_spheres[index];
-
-	let center = (camera.model_view_matrix * vec4(bounding_sphere.xyz, 1.0)).xyz;
-	let radius = bounding_sphere.w;
-
+fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	// Cull objects completely outside the viewing frustum.
 	if (center.z * camera.frustum.y - abs(center.x) * camera.frustum.x < -radius) {
         return false;
@@ -80,12 +75,8 @@ fn project_sphere(c: vec3<f32>, r: f32, z_near: f32, p00: f32, p11: f32) -> vec4
 }
 
 // https://vkguide.dev/docs/gpudriven/compute_culling/
-fn is_occluded(index: u32) -> bool {
+fn is_occluded(center: vec3<f32>, radius: f32) -> bool {
     // Occlusion based culling using axis aligned bounding boxes.
-    let bounding_sphere = bounding_spheres[index];
-    let center = bounding_sphere.xyz;
-    let radius = bounding_sphere.w;
-
     // Project the cull sphere into screenspace coordinates.
     let aabb = project_sphere(center, radius, camera.z_near, camera.p00, camera.p11);
 
@@ -111,11 +102,20 @@ fn is_occluded(index: u32) -> bool {
 }
 
 fn is_visible(index: u32) -> bool {
-    if (!is_within_view_frustum(index)) {
+    //grab sphere cull data from the object buffer
+	let bounding_sphere = bounding_spheres[index];
+
+    let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
+    let radius = bounding_sphere.w;
+
+    if (!is_within_view_frustum(center_view, radius)) {
         return false;
     }
 
-    if (is_occluded(index)) {
+    let center_proj = (camera.view_projection * vec4(bounding_sphere.xyz, 1.0));
+    let center_clip = center_proj.xyz / center_proj.w;
+
+    if (is_occluded(center_clip, radius)) {
         return false;
     }
 

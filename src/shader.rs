@@ -3,14 +3,14 @@
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Camera {
-    pub mvp_matrix: glam::Mat4,
+    pub view_projection: glam::Mat4,
 }
 const _: () = assert!(
     std::mem::size_of:: < Camera > () == 64, "size of Camera does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(Camera, mvp_matrix) == 0,
-    "offset of Camera.mvp_matrix does not match WGSL"
+    memoffset::offset_of!(Camera, view_projection) == 0,
+    "offset of Camera.view_projection does not match WGSL"
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]

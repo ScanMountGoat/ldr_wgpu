@@ -21,8 +21,8 @@ const Z_NEAR: f32 = 0.1;
 const Z_FAR: f32 = 1000.0;
 
 struct CameraData {
-    mvp_matrix: Mat4,
-    model_view_matrix: Mat4,
+    view: Mat4,
+    view_projection: Mat4,
     // https://vkguide.dev/docs/gpudriven/compute_culling/
     frustum: Vec4,
     p00: f32,
@@ -156,7 +156,7 @@ impl State {
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera buffer"),
             contents: bytemuck::cast_slice(&[crate::shader::Camera {
-                mvp_matrix: camera_data.mvp_matrix,
+                view_projection: camera_data.view_projection,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -186,7 +186,8 @@ impl State {
                 p00: camera_data.p00,
                 p11: camera_data.p11,
                 frustum: camera_data.frustum,
-                model_view_matrix: camera_data.model_view_matrix,
+                view_projection: camera_data.view_projection,
+                view: camera_data.view,
                 // Assume the pyramid shares the dimensions of the window.
                 pyramid_dimensions: vec4(size.width as f32, size.height as f32, 0.0, 0.0),
             }]),
@@ -261,7 +262,7 @@ impl State {
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[crate::shader::Camera {
-                mvp_matrix: camera_data.mvp_matrix,
+                view_projection: camera_data.view_projection,
             }]),
         );
         self.queue.write_buffer(
@@ -273,7 +274,8 @@ impl State {
                 p00: camera_data.p00,
                 p11: camera_data.p11,
                 frustum: camera_data.frustum,
-                model_view_matrix: camera_data.model_view_matrix,
+                view_projection: camera_data.view_projection,
+                view: camera_data.view,
                 // Assume the pyramid shares the dimensions of the window.
                 pyramid_dimensions: vec4(size.width as f32, size.height as f32, 0.0, 0.0),
             }]),
@@ -813,17 +815,17 @@ fn calculate_camera_data(
     // wgpu and LDraw have different coordinate systems.
     let axis_correction = Mat4::from_rotation_x(180.0f32.to_radians());
 
-    let model_view_matrix = glam::Mat4::from_translation(translation)
+    let view = glam::Mat4::from_translation(translation)
         * glam::Mat4::from_rotation_x(rotation.x)
         * glam::Mat4::from_rotation_y(rotation.y)
         * axis_correction;
-    let perspective_matrix = glam::Mat4::perspective_rh(0.5, aspect, Z_NEAR, Z_FAR);
+    let projection = glam::Mat4::perspective_rh(0.5, aspect, Z_NEAR, Z_FAR);
 
-    let mvp_matrix = perspective_matrix * model_view_matrix;
+    let view_projection = projection * view;
 
     // Calculate camera frustum data for culling.
     // https://github.com/zeux/niagara/blob/3fafe000ba8fe6e309b41e915b81242b4ca3db28/src/niagara.cpp#L836-L852
-    let perspective_t = perspective_matrix.transpose();
+    let perspective_t = projection.transpose();
     // x + w < 0
     let frustum_x = (perspective_t.col(3) + perspective_t.col(0)).normalize();
     // y + w < 0
@@ -831,13 +833,13 @@ fn calculate_camera_data(
     let frustum = vec4(frustum_x.x, frustum_x.z, frustum_y.y, frustum_y.z);
 
     // Used for occlusion based culling.
-    let p00 = perspective_matrix.col(0).x;
-    let p11 = perspective_matrix.col(1).y;
+    let p00 = projection.col(0).x;
+    let p11 = projection.col(1).y;
 
     CameraData {
-        mvp_matrix,
+        view,
+        view_projection,
         frustum,
-        model_view_matrix,
         p00,
         p11,
     }

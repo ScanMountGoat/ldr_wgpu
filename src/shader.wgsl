@@ -1,5 +1,5 @@
 struct Camera {
-    mvp_matrix: mat4x4<f32>,
+    view_projection: mat4x4<f32>,
 }
 
 @group(0) @binding(0)
@@ -34,7 +34,7 @@ fn vs_main(
         instance.model_matrix_3,
     );
     var out: VertexOutput;
-    out.clip_position = camera.mvp_matrix * model_matrix * vec4<f32>(model.position.xyz, 1.0);
+    out.clip_position = camera.view_projection * model_matrix * vec4<f32>(model.position.xyz, 1.0);
     out.color = unpack4x8unorm(model.color);
     return out;
 }
