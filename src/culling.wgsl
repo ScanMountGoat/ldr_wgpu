@@ -31,8 +31,14 @@ struct DrawIndirect {
 @group(1) @binding(0)
 var<storage, read_write> draws: array<DrawIndirect>;
 
+struct InstanceBounds {
+    sphere: vec4<f32>,
+    min_xyz: vec4<f32>,
+    max_xyz: vec4<f32>,
+}
+
 @group(1) @binding(1)
-var<storage, read> bounding_spheres: array<vec4<f32>>;
+var<storage, read> instance_bounds: array<InstanceBounds>;
 
 fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	// Cull objects completely outside the viewing frustum.
@@ -74,40 +80,75 @@ fn project_sphere(c: vec3<f32>, r: f32, z_near: f32, p00: f32, p11: f32) -> vec4
 	return aabb;
 }
 
-// https://vkguide.dev/docs/gpudriven/compute_culling/
-fn is_occluded(center: vec3<f32>, radius: f32) -> bool {
+fn world_to_ndc(position: vec3<f32>) -> vec3<f32> {
+    var clip_pos = camera.view_projection * vec4(position, 1.0);
+    clip_pos.z = max(clip_pos.z, 0.0);
+
+    let ndc_pos = clip_pos.xyz / clip_pos.w;
+    var ndc_pos_xy = clamp(ndc_pos.xy, vec2(-1.0), vec2(1.0));
+    ndc_pos_xy = ndc_pos_xy * vec2(0.5, -0.5) + vec2(0.5, 0.5);
+
+    return vec3(ndc_pos_xy, ndc_pos.z);
+}
+
+// https://interplayoflight.wordpress.com/2017/11/15/experiments-in-gpu-based-occlusion-culling/
+fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // Occlusion based culling using axis aligned bounding boxes.
-    // Project the cull sphere into screenspace coordinates.
-    let aabb = project_sphere(center, radius, camera.z_near, camera.p00, camera.p11);
+    // Transform the corners to the same space as the depth map.
+    let aabb_size = max_xyz - min_xyz;
+    let aabb_corners = array<vec3<f32>, 8>(
+        world_to_ndc(min_xyz),
+        world_to_ndc(vec3(max_xyz.x, min_xyz.yz)),
+        world_to_ndc(vec3(min_xyz.x, max_xyz.y, min_xyz.z)),
+        world_to_ndc(vec3(min_xyz.xy, max_xyz.z)),
+        world_to_ndc(vec3(max_xyz.xy, min_xyz.z)),
+        world_to_ndc(vec3(min_xyz.x, max_xyz.yz)),
+        world_to_ndc(vec3(max_xyz.x, min_xyz.y, max_xyz.z)),
+        world_to_ndc(max_xyz),
+    );
+
+    var min_xyz = min(aabb_corners[0], aabb_corners[1]);
+    min_xyz = min(min_xyz, aabb_corners[2]);
+    min_xyz = min(min_xyz, aabb_corners[3]);
+    min_xyz = min(min_xyz, aabb_corners[4]);
+    min_xyz = min(min_xyz, aabb_corners[5]);
+    min_xyz = min(min_xyz, aabb_corners[6]);
+    min_xyz = min(min_xyz, aabb_corners[7]);
+
+    var max_xyz = max(aabb_corners[0], aabb_corners[1]);
+    max_xyz = max(max_xyz, aabb_corners[2]);
+    max_xyz = max(max_xyz, aabb_corners[3]);
+    max_xyz = max(max_xyz, aabb_corners[4]);
+    max_xyz = max(max_xyz, aabb_corners[5]);
+    max_xyz = max(max_xyz, aabb_corners[6]);
+    max_xyz = max(max_xyz, aabb_corners[7]);
+
+    let aabb = vec4(min_xyz.xy, max_xyz.xy);
 
     // Calculate the covered area in pixels for the base mip level.
-    let width = (aabb.z - aabb.x) * camera.pyramid_dimensions.x;
-    let height = (aabb.w - aabb.y) * camera.pyramid_dimensions.y;
+    let dimensions = (max_xyz.xy - min_xyz.xy) * camera.pyramid_dimensions.xy;
 
     // Calculate the mip level that will be covered by 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
-    let level = ceil(log2(max(width, height) / 2.0));
+    let level = ceil(log2(max(dimensions.x, dimensions.y) / 2.0));
 
     // Compute the max depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses max for reduction.
     // This helps make the occlusion conservative.
-    // https://interplayoflight.wordpress.com/2017/11/15/experiments-in-gpu-based-occlusion-culling/
     let depth00 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xy, level).x;
     let depth01 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zy, level).x;
     let depth10 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xw, level).x;
     let depth11 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zw, level).x;
-    let depth = max(max(depth00, depth01), max(depth10, depth11));
+    let max_occluder_depth = max(max(depth00, depth01), max(depth10, depth11));
 
     // Check if the minimum depth of the object exceeds the max occluder depth.
     // This means the object is definitely occluded. 
-    let min_depth = camera.z_near / (center.z - radius);
-    return min_depth >= depth;
+    return min_xyz.z > max_occluder_depth;
 }
 
 fn is_visible(index: u32) -> bool {
-    //grab sphere cull data from the object buffer
-	let bounding_sphere = bounding_spheres[index];
-
+    // Bounding spheres for frustum culling.
+	let bounding_sphere = instance_bounds[index].sphere;
     let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
     let radius = bounding_sphere.w;
 
@@ -115,10 +156,11 @@ fn is_visible(index: u32) -> bool {
         return false;
     }
 
-    let center_proj = (camera.view_projection * vec4(bounding_sphere.xyz, 1.0));
-    let center_clip = center_proj.xyz / center_proj.w;
+    // Axis-aligned bounding box for occlusion culling.
+    let min_xyz = instance_bounds[index].min_xyz.xyz;
+    let max_xyz = instance_bounds[index].max_xyz.xyz;
 
-    if (is_occluded(center_clip, radius)) {
+    if (is_occluded(min_xyz, max_xyz)) {
         return false;
     }
 

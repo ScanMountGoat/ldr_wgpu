@@ -73,6 +73,29 @@ const _: () = assert!(
     memoffset::offset_of!(DrawIndirect, base_instance) == 12,
     "offset of DrawIndirect.base_instance does not match WGSL"
 );
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct InstanceBounds {
+    pub sphere: glam::Vec4,
+    pub min_xyz: glam::Vec4,
+    pub max_xyz: glam::Vec4,
+}
+const _: () = assert!(
+    std::mem::size_of:: < InstanceBounds > () == 48,
+    "size of InstanceBounds does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceBounds, sphere) == 0,
+    "offset of InstanceBounds.sphere does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceBounds, min_xyz) == 16,
+    "offset of InstanceBounds.min_xyz does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(InstanceBounds, max_xyz) == 32,
+    "offset of InstanceBounds.max_xyz does not match WGSL"
+);
 pub mod bind_groups {
     pub struct BindGroup0(wgpu::BindGroup);
     pub struct BindGroupLayout0<'a> {
@@ -153,7 +176,7 @@ pub mod bind_groups {
     pub struct BindGroup1(wgpu::BindGroup);
     pub struct BindGroupLayout1<'a> {
         pub draws: wgpu::BufferBinding<'a>,
-        pub bounding_spheres: wgpu::BufferBinding<'a>,
+        pub instance_bounds: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -202,7 +225,7 @@ pub mod bind_groups {
                             wgpu::BindGroupEntry {
                                 binding: 1,
                                 resource: wgpu::BindingResource::Buffer(
-                                    bindings.bounding_spheres,
+                                    bindings.instance_bounds,
                                 ),
                             },
                         ],

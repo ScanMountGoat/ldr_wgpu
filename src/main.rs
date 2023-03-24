@@ -224,7 +224,7 @@ impl State {
             &device,
             crate::culling::bind_groups::BindGroupLayout1 {
                 draws: render_data.indirect_buffer.as_entire_buffer_binding(),
-                bounding_spheres: render_data
+                instance_bounds: render_data
                     .instance_bounds_buffer
                     .as_entire_buffer_binding(),
             },
@@ -726,7 +726,23 @@ fn load_render_data(
                 .map(|v| v.distance(sphere_center))
                 .reduce(f32::max)
                 .unwrap_or_default();
-            instance_bounds.push(sphere_center.extend(sphere_radius));
+
+            let min_xyz = points_world
+                .iter()
+                .copied()
+                .reduce(Vec3::min)
+                .unwrap_or_default();
+            let max_xyz = points_world
+                .iter()
+                .copied()
+                .reduce(Vec3::max)
+                .unwrap_or_default();
+
+            instance_bounds.push(crate::culling::InstanceBounds {
+                sphere: sphere_center.extend(sphere_radius),
+                min_xyz: min_xyz.extend(0.0),
+                max_xyz: max_xyz.extend(0.0),
+            });
 
             combined_transforms.push(*transform);
         }
