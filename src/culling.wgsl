@@ -95,7 +95,6 @@ fn world_to_ndc(position: vec3<f32>) -> vec3<f32> {
 fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // Occlusion based culling using axis aligned bounding boxes.
     // Transform the corners to the same space as the depth map.
-    let aabb_size = max_xyz - min_xyz;
     let aabb_corners = array<vec3<f32>, 8>(
         world_to_ndc(min_xyz),
         world_to_ndc(vec3(max_xyz.x, min_xyz.yz)),
