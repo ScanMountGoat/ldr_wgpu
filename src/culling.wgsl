@@ -92,15 +92,22 @@ fn is_occluded(index: u32) -> bool {
     let width = (aabb.z - aabb.x) * camera.pyramid_dimensions.x;
     let height = (aabb.w - aabb.y) * camera.pyramid_dimensions.y;
 
-    let level = floor(log2(max(width, height)));
+    let level = log2(max(width, height));
 
-    // Compute the minimum depth of a 2x2 texel quad.
-    // This works since the depth pyramid uses min for reduction.
-    let coords = (aabb.xy + aabb.zw) * 0.5;
-    let depth = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, coords, level).x;
-    let depth_sphere = camera.z_near / (center.z - radius);
+    // Compute the max depth of the 2x2 texels for the AABB.
+    // The depth pyramid also uses max for reduction.
+    // This helps make the occlusion conservative.
+    // https://interplayoflight.wordpress.com/2017/11/15/experiments-in-gpu-based-occlusion-culling/
+    let depth00 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xy, level).x;
+    let depth01 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zy, level).x;
+    let depth10 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xw, level).x;
+    let depth11 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zw, level).x;
+    let depth = max(max(depth00, depth01), max(depth10, depth11));
 
-    return depth_sphere > depth;
+    // Check if the minimum depth of the object exceeds the max occluder depth.
+    // This means the object is definitely occluded. 
+    let min_depth = camera.z_near / (center.z - radius);
+    return min_depth >= depth;
 }
 
 fn is_visible(index: u32) -> bool {
