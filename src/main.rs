@@ -811,37 +811,9 @@ fn load_render_data(
             };
             indirect_draws.push(draw);
 
-            // TODO: Find an efficient way to potentially update this each frame.
-            // TODO: Create a struct for the bounding data.
-            let points_world: Vec<_> = geometry
-                .vertices
-                .iter()
-                .map(|v| transform.transform_point3(*v))
-                .collect();
-            let sphere_center =
-                points_world.iter().sum::<Vec3>() / points_world.len().max(1) as f32;
-            let sphere_radius = points_world
-                .iter()
-                .map(|v| v.distance(sphere_center))
-                .reduce(f32::max)
-                .unwrap_or_default();
+            let bounds = calculate_instance_bounds(geometry, transform);
 
-            let min_xyz = points_world
-                .iter()
-                .copied()
-                .reduce(Vec3::min)
-                .unwrap_or_default();
-            let max_xyz = points_world
-                .iter()
-                .copied()
-                .reduce(Vec3::max)
-                .unwrap_or_default();
-
-            instance_bounds.push(crate::culling::InstanceBounds {
-                sphere: sphere_center.extend(sphere_radius),
-                min_xyz: min_xyz.extend(0.0),
-                max_xyz: max_xyz.extend(0.0),
-            });
+            instance_bounds.push(bounds);
 
             combined_transforms.push(*transform);
         }
@@ -881,6 +853,42 @@ fn load_render_data(
         instance_bounds_buffer,
         indirect_buffer,
         draw_count,
+    }
+}
+
+fn calculate_instance_bounds(
+    geometry: &ldr_tools::LDrawGeometry,
+    transform: &Mat4,
+) -> culling::InstanceBounds {
+    // TODO: Find an efficient way to potentially update this each frame.
+    let points_world: Vec<_> = geometry
+        .vertices
+        .iter()
+        .map(|v| transform.transform_point3(*v))
+        .collect();
+
+    let sphere_center = points_world.iter().sum::<Vec3>() / points_world.len().max(1) as f32;
+    let sphere_radius = points_world
+        .iter()
+        .map(|v| v.distance(sphere_center))
+        .reduce(f32::max)
+        .unwrap_or_default();
+
+    let min_xyz = points_world
+        .iter()
+        .copied()
+        .reduce(Vec3::min)
+        .unwrap_or_default();
+    let max_xyz = points_world
+        .iter()
+        .copied()
+        .reduce(Vec3::max)
+        .unwrap_or_default();
+
+    crate::culling::InstanceBounds {
+        sphere: sphere_center.extend(sphere_radius),
+        min_xyz: min_xyz.extend(0.0),
+        max_xyz: max_xyz.extend(0.0),
     }
 }
 
