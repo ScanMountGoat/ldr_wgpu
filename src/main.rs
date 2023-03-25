@@ -72,12 +72,14 @@ struct State {
 
     // Render State
     bind_group0: crate::shader::bind_groups::BindGroup0,
-    pipeline: wgpu::RenderPipeline,
+    model_pipeline: wgpu::RenderPipeline,
+    occluder_pipeline: wgpu::RenderPipeline,
 
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: crate::culling::bind_groups::BindGroup0,
     culling_bind_group1: crate::culling::bind_groups::BindGroup1,
-    culling_pipeline: wgpu::ComputePipeline,
+    frustum_culling_pipeline: wgpu::ComputePipeline,
+    occlusion_culling_pipeline: wgpu::ComputePipeline,
 
     render_data: IndirectSceneData,
 
@@ -146,8 +148,11 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let pipeline = create_pipeline(&device, surface_format);
-        let culling_pipeline = create_culling_pipeline(&device);
+        let model_pipeline = create_pipeline(&device, surface_format);
+        let occluder_pipeline = create_occluder_pipeline(&device);
+
+        let frustum_culling_pipeline = create_culling_pipeline(&device, "frustum_main");
+        let occlusion_culling_pipeline = create_culling_pipeline(&device, "occlusion_main");
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
@@ -208,6 +213,7 @@ impl State {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -236,8 +242,10 @@ impl State {
             queue,
             size,
             config,
-            pipeline,
-            culling_pipeline,
+            model_pipeline,
+            occluder_pipeline,
+            frustum_culling_pipeline,
+            occlusion_culling_pipeline,
             culling_bind_group0,
             culling_bind_group1,
             bind_group0,
@@ -320,9 +328,13 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
-        self.culling_compute_pass(&mut encoder);
-        self.model_pass(&mut encoder, output_view);
+        self.frustum_culling_pass(&mut encoder);
+        // TODO: replace this with a reduced quality occluder pass.
+        self.occluder_pass(&mut encoder);
         self.depth_pyramid_compute_pass(&mut encoder);
+
+        self.occlusion_culling_pass(&mut encoder);
+        self.model_pass(&mut encoder, &output_view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -332,7 +344,44 @@ impl State {
         Ok(())
     }
 
-    fn model_pass(&mut self, encoder: &mut wgpu::CommandEncoder, output_view: wgpu::TextureView) {
+    fn occluder_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Occluder Pass"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: true,
+                }),
+                stencil_ops: None,
+            }),
+        });
+
+        render_pass.set_pipeline(&self.occluder_pipeline);
+
+        crate::shader::bind_groups::set_bind_groups(
+            &mut render_pass,
+            crate::shader::bind_groups::BindGroups {
+                bind_group0: &self.bind_group0,
+            },
+        );
+
+        // Draw the instances of each unique part and color.
+        // This allows reusing most of the rendering state for better performance.
+        render_pass.set_vertex_buffer(0, self.render_data.vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, self.render_data.instance_transforms_buffer.slice(..));
+
+        // Draw each instance with a different transform.
+        // TODO: Use an indirect buffer that's always visible or just frustum culled.
+        render_pass.multi_draw_indirect(
+            &self.render_data.indirect_buffer,
+            0,
+            self.render_data.draw_count,
+        );
+    }
+
+    fn model_pass(&mut self, encoder: &mut wgpu::CommandEncoder, output_view: &wgpu::TextureView) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Model Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -353,7 +402,7 @@ impl State {
             }),
         });
 
-        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_pipeline(&self.model_pipeline);
 
         crate::shader::bind_groups::set_bind_groups(
             &mut render_pass,
@@ -368,6 +417,7 @@ impl State {
         render_pass.set_vertex_buffer(1, self.render_data.instance_transforms_buffer.slice(..));
 
         // Draw each instance with a different transform.
+        // TODO: Use an indirect buffer that's always visible or just frustum culled.
         render_pass.multi_draw_indirect(
             &self.render_data.indirect_buffer,
             0,
@@ -375,12 +425,12 @@ impl State {
         );
     }
 
-    fn culling_compute_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    fn frustum_culling_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Culling Pass"),
+            label: Some("Frustum Culling Pass"),
         });
 
-        compute_pass.set_pipeline(&self.culling_pipeline);
+        compute_pass.set_pipeline(&self.frustum_culling_pipeline);
         crate::culling::bind_groups::set_bind_groups(
             &mut compute_pass,
             crate::culling::bind_groups::BindGroups {
@@ -390,7 +440,27 @@ impl State {
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = crate::culling::compute::MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = crate::culling::compute::FRUSTUM_MAIN_WORKGROUP_SIZE;
+        let count = div_round_up(self.render_data.draw_count, size_x);
+        compute_pass.dispatch_workgroups(count, 1, 1);
+    }
+
+    fn occlusion_culling_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Occlusion Culling Pass"),
+        });
+
+        compute_pass.set_pipeline(&self.occlusion_culling_pipeline);
+        crate::culling::bind_groups::set_bind_groups(
+            &mut compute_pass,
+            crate::culling::bind_groups::BindGroups {
+                bind_group0: &self.culling_bind_group0,
+                bind_group1: &self.culling_bind_group1,
+            },
+        );
+
+        // Assume the workgroup is 1D.
+        let [size_x, _, _] = crate::culling::compute::OCCLUSION_MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -550,7 +620,7 @@ const fn div_round_up(x: u32, d: u32) -> u32 {
     (x + d - 1) / d
 }
 
-fn create_culling_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+fn create_culling_pipeline(device: &wgpu::Device, entry_point: &str) -> wgpu::ComputePipeline {
     let shader = crate::culling::create_shader_module(device);
     let render_pipeline_layout = crate::culling::create_pipeline_layout(device);
 
@@ -558,7 +628,7 @@ fn create_culling_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
         label: Some("Culling Pipeline"),
         layout: Some(&render_pipeline_layout),
         module: &shader,
-        entry_point: "main",
+        entry_point,
     })
 }
 
@@ -609,6 +679,35 @@ fn create_pipeline(
             entry_point: "fs_main",
             targets: &[Some(surface_format.into())],
         }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+    })
+}
+
+fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
+    let shader = crate::shader::create_shader_module(device);
+    let render_pipeline_layout = crate::shader::create_pipeline_layout(device);
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Occluder Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[
+                crate::shader::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
+                crate::shader::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
+            ],
+        },
+        fragment: None,
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
@@ -748,6 +847,8 @@ fn load_render_data(
         }
     }
 
+    println!("Vertices: {:?}", combined_vertices.len());
+
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertex buffer"),
         contents: bytemuck::cast_slice(&combined_vertices),
@@ -880,6 +981,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title(concat!("ldr_wgpu ", env!("CARGO_PKG_VERSION")))
+        // .with_inner_size(winit::dpi::PhysicalSize { width: 1024.0, height: 1024.0 })
         .build(&event_loop)
         .unwrap();
 

@@ -251,7 +251,8 @@ pub mod bind_groups {
     }
 }
 pub mod compute {
-    pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
+    pub const OCCLUSION_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
+    pub const FRUSTUM_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(include_str!("culling.wgsl"));

@@ -129,7 +129,7 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
 
     // Calculate the mip level that will be covered by 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
-    let level = ceil(log2(max(dimensions.x, dimensions.y) / 2.0));
+    var level = ceil(log2(max(dimensions.x, dimensions.y)));
 
     // Compute the max depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses max for reduction.
@@ -142,38 +142,37 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
 
     // Check if the minimum depth of the object exceeds the max occluder depth.
     // This means the object is definitely occluded. 
-    return min_xyz.z > max_occluder_depth;
-}
-
-fn is_visible(index: u32) -> bool {
-    // Bounding spheres for frustum culling.
-	let bounding_sphere = instance_bounds[index].sphere;
-    let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
-    let radius = bounding_sphere.w;
-
-    if (!is_within_view_frustum(center_view, radius)) {
-        return false;
-    }
-
-    // Axis-aligned bounding box for occlusion culling.
-    let min_xyz = instance_bounds[index].min_xyz.xyz;
-    let max_xyz = instance_bounds[index].max_xyz.xyz;
-
-    if (is_occluded(min_xyz, max_xyz)) {
-        return false;
-    }
-
-    return true;
+    return clamp(min_xyz.z, 0.0, 1.0) > max_occluder_depth;
 }
 
 @compute
 @workgroup_size(256)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+fn occlusion_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    // Use the existing state for visibility.
+    let i = global_id.x;
+
+    // Axis-aligned bounding box for occlusion culling.
+    let min_xyz = instance_bounds[i].min_xyz.xyz;
+    let max_xyz = instance_bounds[i].max_xyz.xyz;
+
+    if (is_occluded(min_xyz, max_xyz)) {
+        draws[i].instance_count = 0u;
+    }
+}
+
+@compute
+@workgroup_size(256)
+fn frustum_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Start with every object visible.
     let i = global_id.x;
     draws[i].instance_count = 1u;
 
-    if (!is_visible(i)) {
+    // Bounding spheres for frustum culling.
+	let bounding_sphere = instance_bounds[i].sphere;
+    let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
+    let radius = bounding_sphere.w;
+
+    if (!is_within_view_frustum(center_view, radius)) {
         draws[i].instance_count = 0u;
     }
 }
