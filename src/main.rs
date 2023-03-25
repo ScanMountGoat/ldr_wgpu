@@ -17,8 +17,28 @@ mod culling;
 mod depth_pyramid;
 mod shader;
 
+// The far plane can be infinity since we use reversed-z.
 const Z_NEAR: f32 = 0.1;
-const Z_FAR: f32 = 1000.0;
+const Z_FAR: f32 = f32::INFINITY;
+
+fn depth_stencil_reversed() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        // Reversed-z
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: true,
+        depth_compare: wgpu::CompareFunction::Greater,
+        stencil: Default::default(),
+        bias: Default::default(),
+    }
+}
+
+fn depth_op_reversed() -> wgpu::Operations<f32> {
+    wgpu::Operations {
+        // Clear to 0 for reversed z.
+        load: wgpu::LoadOp::Clear(0.0),
+        store: true,
+    }
+}
 
 struct CameraData {
     view: Mat4,
@@ -350,10 +370,7 @@ impl State {
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: true,
-                }),
+                depth_ops: Some(depth_op_reversed()),
                 stencil_ops: None,
             }),
         });
@@ -394,10 +411,7 @@ impl State {
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: true,
-                }),
+                depth_ops: Some(depth_op_reversed()),
                 stencil_ops: None,
             }),
         });
@@ -680,13 +694,7 @@ fn create_pipeline(
             targets: &[Some(surface_format.into())],
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::LessEqual,
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
+        depth_stencil: Some(depth_stencil_reversed()),
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
     })
@@ -709,13 +717,7 @@ fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         },
         fragment: None,
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::LessEqual,
-            stencil: Default::default(),
-            bias: Default::default(),
-        }),
+        depth_stencil: Some(depth_stencil_reversed()),
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
     })
@@ -944,7 +946,8 @@ fn calculate_camera_data(
         * glam::Mat4::from_rotation_x(rotation.x)
         * glam::Mat4::from_rotation_y(rotation.y)
         * axis_correction;
-    let projection = glam::Mat4::perspective_rh(0.5, aspect, Z_NEAR, Z_FAR);
+
+    let projection = glam::Mat4::perspective_infinite_reverse_rh(0.5, aspect, Z_NEAR);
 
     let view_projection = projection * view;
 

@@ -49,12 +49,6 @@ fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
         return false;
     }
 
-	// Cull objects completely outside the near and far planes.
-    // TODO: Why do we need to negate center.z?
-    if (-center.z + radius < camera.z_near || -center.z - radius > camera.z_far) {
-        return false;
-    }
-
 	return true;
 }
 
@@ -131,18 +125,19 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // 4x4 pixels on the base level should use mip level 1.
     var level = ceil(log2(max(dimensions.x, dimensions.y)));
 
-    // Compute the max depth of the 2x2 texels for the AABB.
-    // The depth pyramid also uses max for reduction.
+    // Compute the min depth of the 2x2 texels for the AABB.
+    // The depth pyramid also uses min for reduction.
     // This helps make the occlusion conservative.
+    // The comparisons are reversed since we use a reversed-z buffer.
     let depth00 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xy, level).x;
     let depth01 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zy, level).x;
     let depth10 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xw, level).x;
     let depth11 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zw, level).x;
-    let max_occluder_depth = max(max(depth00, depth01), max(depth10, depth11));
+    let min_occluder_depth = min(min(depth00, depth01), min(depth10, depth11));
 
     // Check if the minimum depth of the object exceeds the max occluder depth.
     // This means the object is definitely occluded. 
-    return clamp(min_xyz.z, 0.0, 1.0) > max_occluder_depth;
+    return clamp(max_xyz.z, 0.0, 1.0) < min_occluder_depth;
 }
 
 @compute
