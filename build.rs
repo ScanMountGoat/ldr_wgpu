@@ -3,17 +3,17 @@ use std::fmt::Write;
 use wgsl_to_wgpu::{create_shader_module, MatrixVectorTypes, WriteOptions};
 
 fn main() {
-    write_shader("src/shader.wgsl", "shader.wgsl", "src/shader.rs");
-    write_shader("src/culling.wgsl", "culling.wgsl", "src/culling.rs");
+    write_shader("src/shader/model.wgsl", "model.wgsl", "src/shader/model.rs");
+    write_shader("src/shader/culling.wgsl", "culling.wgsl", "src/shader/culling.rs");
     write_shader(
-        "src/depth_pyramid.wgsl",
+        "src/shader/depth_pyramid.wgsl",
         "depth_pyramid.wgsl",
-        "src/depth_pyramid.rs",
+        "src/shader/depth_pyramid.rs",
     );
     write_shader(
-        "src/blit_depth.wgsl",
+        "src/shader/blit_depth.wgsl",
         "blit_depth.wgsl",
-        "src/blit_depth.rs",
+        "src/shader/blit_depth.rs",
     );
 }
 

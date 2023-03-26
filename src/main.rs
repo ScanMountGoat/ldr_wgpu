@@ -11,10 +11,6 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
-// TODO: Create a shader module.
-mod blit_depth;
-mod culling;
-mod depth_pyramid;
 mod shader;
 
 // The far plane can be infinity since we use reversed-z.
@@ -94,14 +90,14 @@ struct State {
     depth_pyramid_sampler: wgpu::Sampler,
 
     // Render State
-    bind_group0: crate::shader::bind_groups::BindGroup0,
+    bind_group0: shader::model::bind_groups::BindGroup0,
     model_pipeline: wgpu::RenderPipeline,
     occluder_pipeline: wgpu::RenderPipeline,
 
     camera_culling_buffer: wgpu::Buffer,
-    culling_bind_group0: crate::culling::bind_groups::BindGroup0,
-    culling_bind_group1: crate::culling::bind_groups::BindGroup1,
-    culling_bind_group1_occluder: crate::culling::bind_groups::BindGroup1,
+    culling_bind_group0: shader::culling::bind_groups::BindGroup0,
+    culling_bind_group1: shader::culling::bind_groups::BindGroup1,
+    culling_bind_group1_occluder: shader::culling::bind_groups::BindGroup1,
     frustum_culling_pipeline: wgpu::ComputePipeline,
     occlusion_culling_pipeline: wgpu::ComputePipeline,
 
@@ -116,8 +112,8 @@ struct DepthPyramid {
     pyramid: wgpu::Texture,
     pyramid_view: wgpu::TextureView,
     mips: Vec<wgpu::TextureView>,
-    base_bind_group: crate::blit_depth::bind_groups::BindGroup0,
-    mip_bind_groups: Vec<crate::depth_pyramid::bind_groups::BindGroup0>,
+    base_bind_group: shader::blit_depth::bind_groups::BindGroup0,
+    mip_bind_groups: Vec<shader::depth_pyramid::bind_groups::BindGroup0>,
 }
 
 #[derive(Default)]
@@ -188,15 +184,15 @@ impl State {
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera buffer"),
-            contents: bytemuck::cast_slice(&[crate::shader::Camera {
+            contents: bytemuck::cast_slice(&[shader::model::Camera {
                 view_projection: camera_data.view_projection,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group0 = crate::shader::bind_groups::BindGroup0::from_bindings(
+        let bind_group0 = shader::model::bind_groups::BindGroup0::from_bindings(
             &device,
-            crate::shader::bind_groups::BindGroupLayout0 {
+            shader::model::bind_groups::BindGroupLayout0 {
                 camera: camera_buffer.as_entire_buffer_binding(),
             },
         );
@@ -224,7 +220,7 @@ impl State {
         // TODO: just use encase for this to avoid manually handling padding?
         let camera_culling_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera culling buffer"),
-            contents: bytemuck::cast_slice(&[crate::culling::Camera {
+            contents: bytemuck::cast_slice(&[shader::culling::Camera {
                 z_near: Z_NEAR,
                 z_far: Z_FAR,
                 p00: camera_data.p00,
@@ -256,18 +252,18 @@ impl State {
             ..Default::default()
         });
 
-        let culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
+        let culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
             &device,
-            crate::culling::bind_groups::BindGroupLayout0 {
+            shader::culling::bind_groups::BindGroupLayout0 {
                 camera: camera_culling_buffer.as_entire_buffer_binding(),
                 depth_pyramid: &depth_pyramid.pyramid_view,
                 depth_pyramid_sampler: &depth_pyramid_sampler,
             },
         );
 
-        let culling_bind_group1 = crate::culling::bind_groups::BindGroup1::from_bindings(
+        let culling_bind_group1 = shader::culling::bind_groups::BindGroup1::from_bindings(
             &device,
-            crate::culling::bind_groups::BindGroupLayout1 {
+            shader::culling::bind_groups::BindGroupLayout1 {
                 draws: render_data.indirect_buffer.as_entire_buffer_binding(),
                 instance_bounds: render_data
                     .instance_bounds_buffer
@@ -275,9 +271,9 @@ impl State {
             },
         );
 
-        let culling_bind_group1_occluder = crate::culling::bind_groups::BindGroup1::from_bindings(
+        let culling_bind_group1_occluder = shader::culling::bind_groups::BindGroup1::from_bindings(
             &device,
-            crate::culling::bind_groups::BindGroupLayout1 {
+            shader::culling::bind_groups::BindGroupLayout1 {
                 draws: render_data_occluder
                     .indirect_buffer
                     .as_entire_buffer_binding(),
@@ -322,14 +318,14 @@ impl State {
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::cast_slice(&[crate::shader::Camera {
+            bytemuck::cast_slice(&[shader::model::Camera {
                 view_projection: camera_data.view_projection,
             }]),
         );
         self.queue.write_buffer(
             &self.camera_culling_buffer,
             0,
-            bytemuck::cast_slice(&[crate::culling::Camera {
+            bytemuck::cast_slice(&[shader::culling::Camera {
                 z_near: Z_NEAR,
                 z_far: Z_FAR,
                 p00: camera_data.p00,
@@ -358,9 +354,9 @@ impl State {
             self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
 
             // The textures were updated, so use views pointing to the new textures.
-            self.culling_bind_group0 = crate::culling::bind_groups::BindGroup0::from_bindings(
+            self.culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
                 &self.device,
-                crate::culling::bind_groups::BindGroupLayout0 {
+                shader::culling::bind_groups::BindGroupLayout0 {
                     camera: self.camera_culling_buffer.as_entire_buffer_binding(),
                     depth_pyramid: &self.depth_pyramid.pyramid_view,
                     depth_pyramid_sampler: &self.depth_pyramid_sampler,
@@ -416,9 +412,9 @@ impl State {
 
         render_pass.set_pipeline(&self.occluder_pipeline);
 
-        crate::shader::bind_groups::set_bind_groups(
+        shader::model::bind_groups::set_bind_groups(
             &mut render_pass,
-            crate::shader::bind_groups::BindGroups {
+            shader::model::bind_groups::BindGroups {
                 bind_group0: &self.bind_group0,
             },
         );
@@ -447,9 +443,9 @@ impl State {
 
         render_pass.set_pipeline(&self.model_pipeline);
 
-        crate::shader::bind_groups::set_bind_groups(
+        shader::model::bind_groups::set_bind_groups(
             &mut render_pass,
-            crate::shader::bind_groups::BindGroups {
+            shader::model::bind_groups::BindGroups {
                 bind_group0: &self.bind_group0,
             },
         );
@@ -461,23 +457,23 @@ impl State {
     fn frustum_culling_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        bind_group1: &crate::culling::bind_groups::BindGroup1,
+        bind_group1: &shader::culling::bind_groups::BindGroup1,
     ) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Frustum Culling Pass"),
         });
 
         compute_pass.set_pipeline(&self.frustum_culling_pipeline);
-        crate::culling::bind_groups::set_bind_groups(
+        shader::culling::bind_groups::set_bind_groups(
             &mut compute_pass,
-            crate::culling::bind_groups::BindGroups {
+            shader::culling::bind_groups::BindGroups {
                 bind_group0: &self.culling_bind_group0,
                 bind_group1,
             },
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = crate::culling::compute::FRUSTUM_MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = shader::culling::compute::FRUSTUM_MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -488,16 +484,16 @@ impl State {
         });
 
         compute_pass.set_pipeline(&self.occlusion_culling_pipeline);
-        crate::culling::bind_groups::set_bind_groups(
+        shader::culling::bind_groups::set_bind_groups(
             &mut compute_pass,
-            crate::culling::bind_groups::BindGroups {
+            shader::culling::bind_groups::BindGroups {
                 bind_group0: &self.culling_bind_group0,
                 bind_group1: &self.culling_bind_group1,
             },
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = crate::culling::compute::OCCLUSION_MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = shader::culling::compute::OCCLUSION_MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -509,15 +505,15 @@ impl State {
 
         // Copy the base level.
         compute_pass.set_pipeline(&self.blit_depth_pipeline);
-        crate::blit_depth::bind_groups::set_bind_groups(
+        shader::blit_depth::bind_groups::set_bind_groups(
             &mut compute_pass,
-            crate::blit_depth::bind_groups::BindGroups {
+            shader::blit_depth::bind_groups::BindGroups {
                 bind_group0: &self.depth_pyramid.base_bind_group,
             },
         );
 
         // Assume the workgroup is 2D.
-        let [size_x, size_y, _] = crate::blit_depth::compute::MAIN_WORKGROUP_SIZE;
+        let [size_x, size_y, _] = shader::blit_depth::compute::MAIN_WORKGROUP_SIZE;
         let count_x = div_round_up(self.size.width, size_x);
         let count_y = div_round_up(self.size.height, size_y);
 
@@ -532,13 +528,13 @@ impl State {
             let mip_width = (self.size.width >> mip).max(1);
             let mip_height = (self.size.height >> mip).max(1);
 
-            crate::depth_pyramid::bind_groups::set_bind_groups(
+            shader::depth_pyramid::bind_groups::set_bind_groups(
                 &mut compute_pass,
-                crate::depth_pyramid::bind_groups::BindGroups { bind_group0 },
+                shader::depth_pyramid::bind_groups::BindGroups { bind_group0 },
             );
 
             // Assume the workgroup is 2D.
-            let [size_x, size_y, _] = crate::depth_pyramid::compute::MAIN_WORKGROUP_SIZE;
+            let [size_x, size_y, _] = shader::depth_pyramid::compute::MAIN_WORKGROUP_SIZE;
             let count_x = div_round_up(mip_width, size_x);
             let count_y = div_round_up(mip_height, size_y);
 
@@ -635,9 +631,9 @@ fn create_depth_pyramid(
 ) -> DepthPyramid {
     let (pyramid, pyramid_mips) = create_depth_pyramid_texture(device, size);
     let pyramid_bind_groups = depth_pyramid_bind_groups(device, &pyramid_mips);
-    let base_bind_group = crate::blit_depth::bind_groups::BindGroup0::from_bindings(
+    let base_bind_group = shader::blit_depth::bind_groups::BindGroup0::from_bindings(
         device,
-        crate::blit_depth::bind_groups::BindGroupLayout0 {
+        shader::blit_depth::bind_groups::BindGroupLayout0 {
             input: base_depth,
             output: &pyramid_mips[0],
         },
@@ -657,13 +653,13 @@ fn create_depth_pyramid(
 fn depth_pyramid_bind_groups(
     device: &wgpu::Device,
     mips: &[wgpu::TextureView],
-) -> Vec<depth_pyramid::bind_groups::BindGroup0> {
+) -> Vec<shader::depth_pyramid::bind_groups::BindGroup0> {
     // The base level is handled separately.
     (1..mips.len())
         .map(|i| {
-            depth_pyramid::bind_groups::BindGroup0::from_bindings(
+            shader::depth_pyramid::bind_groups::BindGroup0::from_bindings(
                 device,
-                depth_pyramid::bind_groups::BindGroupLayout0 {
+                shader::depth_pyramid::bind_groups::BindGroupLayout0 {
                     input: &mips[i - 1],
                     output: &mips[i],
                 },
@@ -677,8 +673,8 @@ const fn div_round_up(x: u32, d: u32) -> u32 {
 }
 
 fn create_culling_pipeline(device: &wgpu::Device, entry_point: &str) -> wgpu::ComputePipeline {
-    let shader = crate::culling::create_shader_module(device);
-    let render_pipeline_layout = crate::culling::create_pipeline_layout(device);
+    let shader = shader::culling::create_shader_module(device);
+    let render_pipeline_layout = shader::culling::create_pipeline_layout(device);
 
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Culling Pipeline"),
@@ -689,8 +685,8 @@ fn create_culling_pipeline(device: &wgpu::Device, entry_point: &str) -> wgpu::Co
 }
 
 fn create_depth_pyramid_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
-    let shader = crate::depth_pyramid::create_shader_module(device);
-    let render_pipeline_layout = crate::depth_pyramid::create_pipeline_layout(device);
+    let shader = shader::depth_pyramid::create_shader_module(device);
+    let render_pipeline_layout = shader::depth_pyramid::create_pipeline_layout(device);
 
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Depth Pyramid Pipeline"),
@@ -701,8 +697,8 @@ fn create_depth_pyramid_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline
 }
 
 fn create_blit_depth_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
-    let shader = crate::blit_depth::create_shader_module(device);
-    let render_pipeline_layout = crate::blit_depth::create_pipeline_layout(device);
+    let shader = shader::blit_depth::create_shader_module(device);
+    let render_pipeline_layout = shader::blit_depth::create_pipeline_layout(device);
 
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Blit Depth Pipeline"),
@@ -716,8 +712,8 @@ fn create_pipeline(
     device: &wgpu::Device,
     surface_format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    let shader = crate::shader::create_shader_module(device);
-    let render_pipeline_layout = crate::shader::create_pipeline_layout(device);
+    let shader = shader::model::create_shader_module(device);
+    let render_pipeline_layout = shader::model::create_pipeline_layout(device);
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
@@ -726,8 +722,8 @@ fn create_pipeline(
             module: &shader,
             entry_point: "vs_main",
             buffers: &[
-                crate::shader::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                crate::shader::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
+                shader::model::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
+                shader::model::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
             ],
         },
         fragment: Some(wgpu::FragmentState {
@@ -743,8 +739,8 @@ fn create_pipeline(
 }
 
 fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
-    let shader = crate::shader::create_shader_module(device);
-    let render_pipeline_layout = crate::shader::create_pipeline_layout(device);
+    let shader = shader::model::create_shader_module(device);
+    let render_pipeline_layout = shader::model::create_pipeline_layout(device);
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Occluder Pipeline"),
@@ -753,8 +749,8 @@ fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
             module: &shader,
             entry_point: "vs_main",
             buffers: &[
-                crate::shader::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                crate::shader::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
+                shader::model::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
+                shader::model::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
             ],
         },
         fragment: None,
@@ -920,7 +916,7 @@ fn load_render_data(
 fn calculate_instance_bounds(
     geometry: &ldr_tools::LDrawGeometry,
     transform: &Mat4,
-) -> culling::InstanceBounds {
+) -> shader::culling::InstanceBounds {
     // TODO: Find an efficient way to potentially update this each frame.
     let points_world: Vec<_> = geometry
         .vertices
@@ -946,7 +942,7 @@ fn calculate_instance_bounds(
         .reduce(Vec3::max)
         .unwrap_or_default();
 
-    crate::culling::InstanceBounds {
+    shader::culling::InstanceBounds {
         sphere: sphere_center.extend(sphere_radius),
         min_xyz: min_xyz.extend(0.0),
         max_xyz: max_xyz.extend(0.0),
@@ -954,7 +950,7 @@ fn calculate_instance_bounds(
 }
 
 fn append_vertices(
-    vertices: &mut Vec<shader::VertexInput>,
+    vertices: &mut Vec<shader::model::VertexInput>,
     geometry: &ldr_tools::LDrawGeometry,
     color_code: u32,
     color_table: &HashMap<u32, LDrawColor>,
@@ -983,7 +979,7 @@ fn append_vertices(
             })
             .unwrap_or(0xFFFFFFFF);
 
-        let new_vertex = crate::shader::VertexInput {
+        let new_vertex = shader::model::VertexInput {
             position: *v,
             color,
         };
