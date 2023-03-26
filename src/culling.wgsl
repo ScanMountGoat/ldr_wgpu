@@ -21,15 +21,16 @@ var depth_pyramid: texture_2d<f32>;
 @group(0) @binding(2)
 var depth_pyramid_sampler: sampler;
 
-struct DrawIndirect {
+struct DrawIndexedIndirect {
     vertex_count: u32,
     instance_count: u32,
-    base_vertex: u32,
+    base_index: u32,
+    vertex_offset: i32,
     base_instance: u32,
 }
 
 @group(1) @binding(0)
-var<storage, read_write> draws: array<DrawIndirect>;
+var<storage, read_write> draws: array<DrawIndexedIndirect>;
 
 struct InstanceBounds {
     sphere: vec4<f32>,

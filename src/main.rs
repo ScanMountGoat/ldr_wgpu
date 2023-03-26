@@ -53,11 +53,12 @@ struct CameraData {
 // Make our own so we can derive bytemuck.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct DrawIndirect {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub base_vertex: u32,
-    pub base_instance: u32,
+struct DrawIndexedIndirect {
+    vertex_count: u32,
+    instance_count: u32,
+    base_index: u32,
+    vertex_offset: i32,
+    base_instance: u32,
 }
 
 /// Combined data for every part in the scene.
@@ -68,6 +69,7 @@ struct IndirectSceneData {
     draw_count: u32,
     // TODO: Duplicate this data for edges as well.
     vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
 }
 
@@ -421,24 +423,8 @@ impl State {
             },
         );
 
-        // Draw the instances of each unique part and color.
-        // This allows reusing most of the rendering state for better performance.
-        render_pass.set_vertex_buffer(0, self.render_data_occluder.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(
-            1,
-            self.render_data_occluder
-                .instance_transforms_buffer
-                .slice(..),
-        );
-
-        // Draw each instance with a different transform.
-        // TODO: Is it worth frustum culling this pass?
-        // TODO: Just assume the indirect buffers are the same?
-        render_pass.multi_draw_indirect(
-            &self.render_data_occluder.indirect_buffer,
-            0,
-            self.render_data_occluder.draw_count,
-        );
+        // TODO: make this a method?
+        draw_indirect(&mut render_pass, &self.render_data_occluder);
     }
 
     fn model_pass(&mut self, encoder: &mut wgpu::CommandEncoder, output_view: &wgpu::TextureView) {
@@ -468,18 +454,8 @@ impl State {
             },
         );
 
-        // Draw the instances of each unique part and color.
-        // This allows reusing most of the rendering state for better performance.
-        render_pass.set_vertex_buffer(0, self.render_data.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.render_data.instance_transforms_buffer.slice(..));
-
-        // Draw each instance with a different transform.
-        // TODO: Use an indirect buffer that's always visible or just frustum culled.
-        render_pass.multi_draw_indirect(
-            &self.render_data.indirect_buffer,
-            0,
-            self.render_data.draw_count,
-        );
+        // TODO: make this a method?
+        draw_indirect(&mut render_pass, &self.render_data);
     }
 
     fn frustum_culling_pass(
@@ -631,6 +607,25 @@ impl State {
             _ => (),
         }
     }
+}
+
+fn draw_indirect<'a>(render_pass: &mut wgpu::RenderPass<'a>, indirect_data: &'a IndirectSceneData) {
+    // Draw the instances of each unique part and color.
+    // This allows reusing most of the rendering state for better performance.
+    render_pass.set_index_buffer(
+        indirect_data.index_buffer.slice(..),
+        wgpu::IndexFormat::Uint32,
+    );
+    render_pass.set_vertex_buffer(0, indirect_data.vertex_buffer.slice(..));
+    render_pass.set_vertex_buffer(1, indirect_data.instance_transforms_buffer.slice(..));
+
+    // Draw each instance with a different transform.
+    // TODO: Use an indirect buffer that's always visible or just frustum culled.
+    render_pass.multi_draw_indexed_indirect(
+        &indirect_data.indirect_buffer,
+        0,
+        indirect_data.draw_count,
+    );
 }
 
 fn create_depth_pyramid(
@@ -835,6 +830,7 @@ fn load_render_data(
 ) -> IndirectSceneData {
     // Combine all data into a single multidraw indirect call.
     let mut combined_vertices = Vec::new();
+    let mut combined_indices = Vec::new();
     let mut combined_transforms = Vec::new();
     let mut indirect_draws = Vec::new();
     let mut instance_bounds = Vec::new();
@@ -844,19 +840,22 @@ fn load_render_data(
         // This is necessary since we store face colors per vertex.
         let geometry = &scene.geometry_cache[name];
 
-        let base_vertex = combined_vertices.len() as u32;
+        let base_index = combined_indices.len() as u32;
+        combined_indices.extend_from_slice(&geometry.vertex_indices);
+
+        let vertex_offset = combined_vertices.len() as i32;
         append_vertices(&mut combined_vertices, geometry, *color, color_table);
-        let vertex_count = combined_vertices.len() as u32 - base_vertex;
 
         // Each draw specifies the part mesh using an offset and count.
         // The base instance steps through the transforms buffer.
         // Each draw uses a single instance to allow culling individual draws.
         for transform in transforms {
-            let draw = DrawIndirect {
-                vertex_count,
+            let draw = DrawIndexedIndirect {
+                vertex_count: geometry.vertex_indices.len() as u32,
                 instance_count: 1,
+                base_index,
+                vertex_offset,
                 base_instance: combined_transforms.len() as u32,
-                base_vertex,
             };
             indirect_draws.push(draw);
 
@@ -868,12 +867,22 @@ fn load_render_data(
         }
     }
 
-    println!("Vertices: {:?}", combined_vertices.len());
+    println!(
+        "Vertices: {}, Indices: {}",
+        combined_vertices.len(),
+        combined_indices.len()
+    );
 
     let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("vertex buffer"),
         contents: bytemuck::cast_slice(&combined_vertices),
         usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("index buffer"),
+        contents: bytemuck::cast_slice(&combined_indices),
+        usage: wgpu::BufferUsages::INDEX,
     });
 
     let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -898,6 +907,7 @@ fn load_render_data(
 
     IndirectSceneData {
         vertex_buffer,
+        index_buffer,
         instance_transforms_buffer,
         instance_bounds_buffer,
         indirect_buffer,

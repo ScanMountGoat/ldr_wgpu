@@ -47,31 +47,36 @@ const _: () = assert!(
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DrawIndirect {
+pub struct DrawIndexedIndirect {
     pub vertex_count: u32,
     pub instance_count: u32,
-    pub base_vertex: u32,
+    pub base_index: u32,
+    pub vertex_offset: i32,
     pub base_instance: u32,
 }
 const _: () = assert!(
-    std::mem::size_of:: < DrawIndirect > () == 16,
-    "size of DrawIndirect does not match WGSL"
+    std::mem::size_of:: < DrawIndexedIndirect > () == 20,
+    "size of DrawIndexedIndirect does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(DrawIndirect, vertex_count) == 0,
-    "offset of DrawIndirect.vertex_count does not match WGSL"
+    memoffset::offset_of!(DrawIndexedIndirect, vertex_count) == 0,
+    "offset of DrawIndexedIndirect.vertex_count does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(DrawIndirect, instance_count) == 4,
-    "offset of DrawIndirect.instance_count does not match WGSL"
+    memoffset::offset_of!(DrawIndexedIndirect, instance_count) == 4,
+    "offset of DrawIndexedIndirect.instance_count does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(DrawIndirect, base_vertex) == 8,
-    "offset of DrawIndirect.base_vertex does not match WGSL"
+    memoffset::offset_of!(DrawIndexedIndirect, base_index) == 8,
+    "offset of DrawIndexedIndirect.base_index does not match WGSL"
 );
 const _: () = assert!(
-    memoffset::offset_of!(DrawIndirect, base_instance) == 12,
-    "offset of DrawIndirect.base_instance does not match WGSL"
+    memoffset::offset_of!(DrawIndexedIndirect, vertex_offset) == 12,
+    "offset of DrawIndexedIndirect.vertex_offset does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(DrawIndexedIndirect, base_instance) == 16,
+    "offset of DrawIndexedIndirect.base_instance does not match WGSL"
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
