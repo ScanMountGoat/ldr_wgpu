@@ -841,9 +841,11 @@ fn load_render_data(
         let geometry = &scene.geometry_cache[name];
 
         let base_index = combined_indices.len() as u32;
-        combined_indices.extend_from_slice(&geometry.vertex_indices);
-
         let vertex_offset = combined_vertices.len() as i32;
+
+        // TODO: Create an append_geometry function that handles colors.
+        // We should be able to weld vertices for geometry with a shared face color.
+        combined_indices.extend_from_slice(&geometry.vertex_indices);
         append_vertices(&mut combined_vertices, geometry, *color, color_table);
 
         // Each draw specifies the part mesh using an offset and count.
@@ -1035,19 +1037,24 @@ fn main() {
     let ldraw_path = &args[1];
     let path = &args[2];
 
+    // Use the lowest possible quality for the occluder pass.
+    // The occluder pass itself isn't occlusion culled,
+    // so reducing the vertex count is critical for good performance.
+    // Weld vertices to take advantage of vertex caching on the GPU.
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
-        weld_vertices: false,
+        weld_vertices: true,
         stud_type: StudType::Disabled,
         primitive_resolution: PrimitiveResolution::Low,
         ..Default::default()
     };
-    // TODO: This should use a separate source map and low res primitives.
     // TODO: Don't include any transparent parts since they shouldn't occlude anything.
+    // TODO: Ignore stickers and replace patterned with non patterned versions.
     let scene_occluder = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
     println!("Load scene occluder: {:?}", start.elapsed());
 
+    // TODO: Weld vertices for non patterned or printed parts.
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
