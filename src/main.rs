@@ -2,7 +2,7 @@ use std::{collections::HashMap, num::NonZeroU32};
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
-use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced};
+use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, PrimitiveResolution, StudType};
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -63,11 +63,12 @@ struct DrawIndirect {
 /// Combined data for every part in the scene.
 /// Renderable with a single multidraw indirect call.
 struct IndirectSceneData {
-    vertex_buffer: wgpu::Buffer,
     instance_transforms_buffer: wgpu::Buffer,
     instance_bounds_buffer: wgpu::Buffer,
-    indirect_buffer: wgpu::Buffer,
     draw_count: u32,
+    // TODO: Duplicate this data for edges as well.
+    vertex_buffer: wgpu::Buffer,
+    indirect_buffer: wgpu::Buffer,
 }
 
 struct State {
@@ -98,10 +99,13 @@ struct State {
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: crate::culling::bind_groups::BindGroup0,
     culling_bind_group1: crate::culling::bind_groups::BindGroup1,
+    culling_bind_group1_occluder: crate::culling::bind_groups::BindGroup1,
     frustum_culling_pipeline: wgpu::ComputePipeline,
     occlusion_culling_pipeline: wgpu::ComputePipeline,
 
     render_data: IndirectSceneData,
+    // TODO: Avoid overlap between these two versions of the scene.
+    render_data_occluder: IndirectSceneData,
 
     input_state: InputState,
 }
@@ -125,10 +129,12 @@ impl State {
     async fn new(
         window: &Window,
         scene: &LDrawSceneInstanced,
+        scene_occluder: &LDrawSceneInstanced,
         color_table: &HashMap<u32, LDrawColor>,
     ) -> Self {
+        // TODO: Investigate why DX12 is so slow.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL,
             ..Default::default()
         });
         let surface = unsafe { instance.create_surface(window).unwrap() };
@@ -202,6 +208,17 @@ impl State {
             start.elapsed()
         );
 
+        // TODO: Avoid duplicating culling information?
+        // TODO: Don't include color information since this is only used for depth.
+        let start = std::time::Instant::now();
+        let render_data_occluder = load_render_data(&device, scene_occluder, color_table);
+        println!(
+            "Load {} parts and {} unique parts: {:?}",
+            render_data.draw_count,
+            scene.geometry_cache.len(),
+            start.elapsed()
+        );
+
         // TODO: just use encase for this to avoid manually handling padding?
         let camera_culling_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera culling buffer"),
@@ -256,6 +273,18 @@ impl State {
             },
         );
 
+        let culling_bind_group1_occluder = crate::culling::bind_groups::BindGroup1::from_bindings(
+            &device,
+            crate::culling::bind_groups::BindGroupLayout1 {
+                draws: render_data_occluder
+                    .indirect_buffer
+                    .as_entire_buffer_binding(),
+                instance_bounds: render_data_occluder
+                    .instance_bounds_buffer
+                    .as_entire_buffer_binding(),
+            },
+        );
+
         Self {
             surface,
             device,
@@ -268,8 +297,10 @@ impl State {
             occlusion_culling_pipeline,
             culling_bind_group0,
             culling_bind_group1,
+            culling_bind_group1_occluder,
             bind_group0,
             render_data,
+            render_data_occluder,
             translation,
             rotation_xyz,
             camera_buffer,
@@ -348,12 +379,18 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
-        self.frustum_culling_pass(&mut encoder);
-        // TODO: replace this with a reduced quality occluder pass.
+        // Apply cheap and accurate culling methods first.
+        self.frustum_culling_pass(&mut encoder, &self.culling_bind_group1);
+        self.frustum_culling_pass(&mut encoder, &self.culling_bind_group1_occluder);
+
+        // Use a lower detailed scene for generating the occlusion depth map.
         self.occluder_pass(&mut encoder);
         self.depth_pyramid_compute_pass(&mut encoder);
 
+        // Occlude the high detailed draws using the occlusion depth map.
+        // This saves time if low detail + high detail occluded <  high detail.
         self.occlusion_culling_pass(&mut encoder);
+
         self.model_pass(&mut encoder, &output_view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -386,15 +423,21 @@ impl State {
 
         // Draw the instances of each unique part and color.
         // This allows reusing most of the rendering state for better performance.
-        render_pass.set_vertex_buffer(0, self.render_data.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.render_data.instance_transforms_buffer.slice(..));
+        render_pass.set_vertex_buffer(0, self.render_data_occluder.vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(
+            1,
+            self.render_data_occluder
+                .instance_transforms_buffer
+                .slice(..),
+        );
 
         // Draw each instance with a different transform.
-        // TODO: Use an indirect buffer that's always visible or just frustum culled.
+        // TODO: Is it worth frustum culling this pass?
+        // TODO: Just assume the indirect buffers are the same?
         render_pass.multi_draw_indirect(
-            &self.render_data.indirect_buffer,
+            &self.render_data_occluder.indirect_buffer,
             0,
-            self.render_data.draw_count,
+            self.render_data_occluder.draw_count,
         );
     }
 
@@ -439,7 +482,11 @@ impl State {
         );
     }
 
-    fn frustum_culling_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    fn frustum_culling_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind_group1: &crate::culling::bind_groups::BindGroup1,
+    ) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Frustum Culling Pass"),
         });
@@ -449,7 +496,7 @@ impl State {
             &mut compute_pass,
             crate::culling::bind_groups::BindGroups {
                 bind_group0: &self.culling_bind_group0,
-                bind_group1: &self.culling_bind_group1,
+                bind_group1,
             },
         );
 
@@ -459,7 +506,7 @@ impl State {
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
-    fn occlusion_culling_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Occlusion Culling Pass"),
         });
@@ -479,7 +526,7 @@ impl State {
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
-    fn depth_pyramid_compute_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    fn depth_pyramid_compute_pass(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Depth Pyramid Pass"),
         });
@@ -982,6 +1029,19 @@ fn main() {
     let settings = GeometrySettings {
         triangulate: true,
         weld_vertices: false,
+        stud_type: StudType::Disabled,
+        primitive_resolution: PrimitiveResolution::Low,
+        ..Default::default()
+    };
+    // TODO: This should use a separate source map and low res primitives.
+    // TODO: Don't include any transparent parts since they shouldn't occlude anything.
+    let scene_occluder = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
+    println!("Load scene occluder: {:?}", start.elapsed());
+
+    let start = std::time::Instant::now();
+    let settings = GeometrySettings {
+        triangulate: true,
+        weld_vertices: false,
         ..Default::default()
     };
     let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
@@ -996,7 +1056,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = block_on(State::new(&window, &scene, &color_table));
+    let mut state = block_on(State::new(&window, &scene, &scene_occluder, &color_table));
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
             ref event,

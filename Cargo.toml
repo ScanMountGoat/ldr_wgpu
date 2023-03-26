@@ -7,7 +7,7 @@ edition = "2021"
 futures = "0.3.27"
 wgpu = "0.15.1"
 winit = "0.28.3"
-ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "c6bda26" }
+ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "91d05c9" }
 bytemuck = { version = "1.13", features = [ "derive" ] }
 glam = { version = "0.23.0", features = ["bytemuck"] }
 memoffset = "0.8.0"
