@@ -839,10 +839,13 @@ fn load_render_data(
         let base_index = combined_indices.len() as u32;
         let vertex_offset = combined_vertices.len() as i32;
 
-        // TODO: Create an append_geometry function that handles colors.
-        // We should be able to weld vertices for geometry with a shared face color.
-        combined_indices.extend_from_slice(&geometry.vertex_indices);
-        append_vertices(&mut combined_vertices, geometry, *color, color_table);
+        append_geometry(
+            &mut combined_vertices,
+            &mut combined_indices,
+            geometry,
+            *color,
+            color_table,
+        );
 
         // Each draw specifies the part mesh using an offset and count.
         // The base instance steps through the transforms buffer.
@@ -949,42 +952,69 @@ fn calculate_instance_bounds(
     }
 }
 
-fn append_vertices(
+fn append_geometry(
     vertices: &mut Vec<shader::model::VertexInput>,
+    vertex_indices: &mut Vec<u32>,
     geometry: &ldr_tools::LDrawGeometry,
     color_code: u32,
     color_table: &HashMap<u32, LDrawColor>,
 ) {
-    for (i, v) in geometry.vertices.iter().enumerate() {
-        // Assume faces are already triangulated and not welded.
-        // This means every 3 vertices defines a new face.
-        // TODO: missing color codes?
-        // TODO: publicly expose color handling logic in ldr_tools.
-        // TODO: handle the case where the face color list is empty?
-        let face_color = geometry
-            .face_colors
-            .get(i / 3)
-            .unwrap_or(&geometry.face_colors[0]);
-        let replaced_color = if face_color.color == 16 {
-            color_code
-        } else {
-            face_color.color
-        };
+    // TODO: missing color codes?
+    // TODO: publicly expose color handling logic in ldr_tools.
+    // TODO: handle the case where the face color list is empty?
+    match geometry.face_colors.as_slice() {
+        [face_color] => {
+            // Each face and also vertex has the same color.
+            // The welded vertex indices can be used as is.
+            let color = rgba_color(face_color, color_code, color_table);
+            vertices.extend(
+                geometry
+                    .vertices
+                    .iter()
+                    .map(|v| shader::model::VertexInput {
+                        position: *v,
+                        color,
+                    }),
+            );
+            vertex_indices.extend_from_slice(&geometry.vertex_indices);
+        }
+        face_colors => {
+            // Assume faces are already triangulated.
+            // Make each vertex unique to convert per face to vertex coloring.
+            // This means every 3 vertices defines a new face.
+            for (i, vertex_index) in geometry.vertex_indices.iter().enumerate() {
+                let face_color = face_colors.get(i / 3).unwrap_or(&face_colors[0]);
+                let color = rgba_color(face_color, color_code, color_table);
 
-        let color = color_table
-            .get(&replaced_color)
-            .map(|c| {
-                // TODO: What is the GPU endianness?
-                u32::from_le_bytes(c.rgba_linear.map(|f| (f * 255.0) as u8))
-            })
-            .unwrap_or(0xFFFFFFFF);
-
-        let new_vertex = shader::model::VertexInput {
-            position: *v,
-            color,
-        };
-        vertices.push(new_vertex);
+                let new_vertex = shader::model::VertexInput {
+                    position: geometry.vertices[*vertex_index as usize],
+                    color,
+                };
+                vertices.push(new_vertex);
+                vertex_indices.push(i as u32);
+            }
+        }
     }
+}
+
+fn rgba_color(
+    face_color: &ldr_tools::FaceColor,
+    color_code: u32,
+    color_table: &HashMap<u32, LDrawColor>,
+) -> u32 {
+    let replaced_color = if face_color.color == 16 {
+        color_code
+    } else {
+        face_color.color
+    };
+
+    color_table
+        .get(&replaced_color)
+        .map(|c| {
+            // TODO: What is the GPU endianness?
+            u32::from_le_bytes(c.rgba_linear.map(|f| (f * 255.0) as u8))
+        })
+        .unwrap_or(0xFFFFFFFF)
 }
 
 fn calculate_camera_data(
@@ -1050,11 +1080,10 @@ fn main() {
     let scene_occluder = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
     println!("Load scene occluder: {:?}", start.elapsed());
 
-    // TODO: Weld vertices for non patterned or printed parts.
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
-        weld_vertices: false,
+        weld_vertices: true,
         ..Default::default()
     };
     let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
