@@ -112,7 +112,10 @@ struct State {
 }
 
 struct DepthPyramid {
-    pyramid_view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+    base_mip: wgpu::TextureView,
+    all_mips: wgpu::TextureView,
     base_bind_group: shader::blit_depth::bind_groups::BindGroup0,
     mip_bind_groups: Vec<shader::depth_pyramid::bind_groups::BindGroup0>,
 }
@@ -233,20 +236,21 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let (depth_texture, depth_view) = create_depth_texture(&device, size);
+        let (depth_texture, depth_view) = create_depth_texture(&device, size.width, size.height);
 
         let depth_pyramid_pipeline = create_depth_pyramid_pipeline(&device);
         let blit_depth_pipeline = create_blit_depth_pipeline(&device);
 
-        let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
+        let depth_pyramid = create_depth_pyramid(&device, size);
 
+        // Use a point sampler since filtering is done manually.
         let depth_pyramid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("depth pyramid sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -255,7 +259,7 @@ impl State {
             &device,
             shader::culling::bind_groups::BindGroupLayout0 {
                 camera: camera_culling_buffer.as_entire_buffer_binding(),
-                depth_pyramid: &depth_pyramid.pyramid_view,
+                depth_pyramid: &depth_pyramid.all_mips,
                 depth_pyramid_sampler: &depth_pyramid_sampler,
             },
         );
@@ -344,18 +348,19 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            let (depth_texture, depth_view) = create_depth_texture(&self.device, new_size);
+            let (depth_texture, depth_view) =
+                create_depth_texture(&self.device, new_size.width, new_size.height);
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
 
-            self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
+            self.depth_pyramid = create_depth_pyramid(&self.device, new_size);
 
             // The textures were updated, so use views pointing to the new textures.
             self.culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
                 &self.device,
                 shader::culling::bind_groups::BindGroupLayout0 {
                     camera: self.camera_culling_buffer.as_entire_buffer_binding(),
-                    depth_pyramid: &self.depth_pyramid.pyramid_view,
+                    depth_pyramid: &self.depth_pyramid.all_mips,
                     depth_pyramid_sampler: &self.depth_pyramid_sampler,
                 },
             );
@@ -380,7 +385,7 @@ impl State {
 
         // Use a lower detailed scene for generating the occlusion depth map.
         self.occluder_pass(&mut encoder);
-        self.depth_pyramid_compute_pass(&mut encoder);
+        self.depth_pyramid_pass(&mut encoder);
 
         // Occlude the high detailed draws using the occlusion depth map.
         // This saves time if low detail + high detail occluded <  high detail.
@@ -401,7 +406,7 @@ impl State {
             label: Some("Occluder Pass"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
+                view: &self.depth_pyramid.base_mip,
                 depth_ops: Some(depth_op_reversed()),
                 stencil_ops: None,
             }),
@@ -495,7 +500,7 @@ impl State {
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
-    fn depth_pyramid_compute_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn depth_pyramid_pass(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Depth Pyramid Pass"),
         });
@@ -511,8 +516,8 @@ impl State {
 
         // Assume the workgroup is 2D.
         let [size_x, size_y, _] = shader::blit_depth::compute::MAIN_WORKGROUP_SIZE;
-        let count_x = div_round_up(self.size.width, size_x);
-        let count_y = div_round_up(self.size.height, size_y);
+        let count_x = div_round_up(self.depth_pyramid.width, size_x);
+        let count_y = div_round_up(self.depth_pyramid.height, size_y);
 
         compute_pass.dispatch_workgroups(count_x, count_y, 1);
 
@@ -522,8 +527,8 @@ impl State {
         for (i, bind_group0) in self.depth_pyramid.mip_bind_groups.iter().enumerate() {
             // The first level is copied separately from the depth texture.
             let mip = i + 1;
-            let mip_width = (self.size.width >> mip).max(1);
-            let mip_height = (self.size.height >> mip).max(1);
+            let mip_width = (self.depth_pyramid.width >> mip).max(1);
+            let mip_height = (self.depth_pyramid.height >> mip).max(1);
 
             shader::depth_pyramid::bind_groups::set_bind_groups(
                 &mut compute_pass,
@@ -621,25 +626,40 @@ fn draw_indirect<'a>(render_pass: &mut wgpu::RenderPass<'a>, indirect_data: &'a 
     );
 }
 
+fn previous_power_of_2(x: u32) -> u32 {
+    1 << (u32::BITS - 1 - x.leading_zeros())
+}
+
 fn create_depth_pyramid(
     device: &wgpu::Device,
-    size: winit::dpi::PhysicalSize<u32>,
-    base_depth: &wgpu::TextureView,
+    window_size: winit::dpi::PhysicalSize<u32>,
 ) -> DepthPyramid {
-    let (pyramid, pyramid_mips) = create_depth_pyramid_texture(device, size);
+    // Always use power of two dimensions to avoid edge cases when downsampling.
+    let width = previous_power_of_2(window_size.width);
+    let height = previous_power_of_2(window_size.height);
+
+    let (pyramid, pyramid_mips) = create_depth_pyramid_texture(device, width, height);
     let pyramid_bind_groups = depth_pyramid_bind_groups(device, &pyramid_mips);
+
+    let pyramid_view = pyramid.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Depth attachments can't have mipmaps.
+    // Create a separate texture for the occluder pass to use.
+    let (_, pyramid_base_mip_view) = create_depth_texture(device, width, height);
+
     let base_bind_group = shader::blit_depth::bind_groups::BindGroup0::from_bindings(
         device,
         shader::blit_depth::bind_groups::BindGroupLayout0 {
-            input: base_depth,
+            input: &pyramid_base_mip_view,
             output: &pyramid_mips[0],
         },
     );
 
-    let pyramid_view = pyramid.create_view(&wgpu::TextureViewDescriptor::default());
-
     DepthPyramid {
-        pyramid_view,
+        width,
+        height,
+        base_mip: pyramid_base_mip_view,
+        all_mips: pyramid_view,
         base_bind_group,
         mip_bind_groups: pyramid_bind_groups,
     }
@@ -669,13 +689,14 @@ const fn div_round_up(x: u32, d: u32) -> u32 {
 
 fn create_depth_texture(
     device: &wgpu::Device,
-    size: winit::dpi::PhysicalSize<u32>,
+    width: u32,
+    height: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth texture"),
         size: wgpu::Extent3d {
-            width: size.width,
-            height: size.height,
+            width: width,
+            height: height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -693,11 +714,12 @@ fn create_depth_texture(
 
 fn create_depth_pyramid_texture(
     device: &wgpu::Device,
-    size: winit::dpi::PhysicalSize<u32>,
+    width: u32,
+    height: u32,
 ) -> (wgpu::Texture, Vec<wgpu::TextureView>) {
     let size = wgpu::Extent3d {
-        width: size.width,
-        height: size.height,
+        width: width,
+        height: height,
         depth_or_array_layers: 1,
     };
     let mip_level_count = size.max_mips(wgpu::TextureDimension::D2);

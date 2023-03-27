@@ -74,14 +74,12 @@ fn project_sphere(c: vec3<f32>, r: f32, z_near: f32, p00: f32, p11: f32) -> vec4
 	return aabb;
 }
 
-fn world_to_ndc(position: vec3<f32>) -> vec3<f32> {
+fn world_to_coords(position: vec3<f32>) -> vec3<f32> {
     var clip_pos = camera.view_projection * vec4(position, 1.0);
-    clip_pos.z = max(clip_pos.z, 0.0);
 
-    let ndc_pos = clip_pos.xyz / clip_pos.w;
-    var ndc_pos_xy = clamp(ndc_pos.xy, vec2(-1.0), vec2(1.0));
-    ndc_pos_xy = ndc_pos_xy * vec2(0.5, -0.5) + vec2(0.5, 0.5);
-
+    let ndc_pos = clamp(clip_pos.xyz / clip_pos.w, vec3(-1.0), vec3(1.0));
+    // Convert to UV coordinates.
+    var ndc_pos_xy = ndc_pos.xy * vec2(0.5, -0.5) + vec2(0.5, 0.5);
     return vec3(ndc_pos_xy, ndc_pos.z);
 }
 
@@ -90,14 +88,14 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // Occlusion based culling using axis aligned bounding boxes.
     // Transform the corners to the same space as the depth map.
     let aabb_corners = array<vec3<f32>, 8>(
-        world_to_ndc(min_xyz),
-        world_to_ndc(vec3(max_xyz.x, min_xyz.yz)),
-        world_to_ndc(vec3(min_xyz.x, max_xyz.y, min_xyz.z)),
-        world_to_ndc(vec3(min_xyz.xy, max_xyz.z)),
-        world_to_ndc(vec3(max_xyz.xy, min_xyz.z)),
-        world_to_ndc(vec3(min_xyz.x, max_xyz.yz)),
-        world_to_ndc(vec3(max_xyz.x, min_xyz.y, max_xyz.z)),
-        world_to_ndc(max_xyz),
+        world_to_coords(min_xyz),
+        world_to_coords(vec3(max_xyz.x, min_xyz.yz)),
+        world_to_coords(vec3(min_xyz.x, max_xyz.y, min_xyz.z)),
+        world_to_coords(vec3(min_xyz.xy, max_xyz.z)),
+        world_to_coords(vec3(max_xyz.xy, min_xyz.z)),
+        world_to_coords(vec3(min_xyz.x, max_xyz.yz)),
+        world_to_coords(vec3(max_xyz.x, min_xyz.y, max_xyz.z)),
+        world_to_coords(max_xyz),
     );
 
     var min_xyz = min(aabb_corners[0], aabb_corners[1]);
@@ -125,7 +123,7 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
 
     // Calculate the mip level that will be covered by 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
-    var level = ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y) / 2.0));
+    var level = ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y))) - 1.0;
 
     // Compute the min depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses min for reduction.
@@ -137,9 +135,10 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     let depth11 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zw, level).x;
     let min_occluder_depth = min(min(depth00, depth01), min(depth10, depth11));
 
-    // Check if the minimum depth of the object exceeds the max occluder depth.
-    // This means the object is definitely occluded. 
-    return clamp(max_xyz.z, 0.0, 1.0) < min_occluder_depth;
+    // Check if the closest depth of the object exceeds the farthest occluder depth.
+    // This means the object is definitely occluded.
+    // The comparisons are reversed since we use a reversed-z buffer.
+    return max_xyz.z < min_occluder_depth;
 }
 
 @compute
