@@ -20,6 +20,9 @@ Modern GPUs are highly effective at processing large amounts of data in parallel
 
 ldr_wgpu combines geometry for each each part into a single draw. Draws are batched together and issued as a single call using [indirect rendering](https://www.khronos.org/opengl/wiki/Vertex_Rendering#Indirect_rendering). Indirect rendering places draw call parameters in a buffer. This allows culling of individual parts to be calculated entirely on the GPU using compute shaders. All draws are indexed since this greatly reduces the amount of unique vertices that need to be processed by the GPU.
 
+### Instancing
+LDraw scenes are highly repetitive since the same part can be used many times within the same model. Instancing provides a way to reduce memory usage and processing time by reducing duplicate geometry. The geometry for each part can be stored exactly once with a separate instance buffer containing the transforms for each instace of the part. Parts appearing in multiple colors can also share geometry. This currently isn't implemented since it makes it more difficult to combine all parts into a single indirect draw call.
+
 ### Object Culling
 LDraw files are designed to model physical objects similar to CAD models. This results in lots of internal geometric detail that may never be visibile while rendering. The ideal renderer would only render exactly the polygons that are visible. Perfect culling can be expensive, so a suitable culling algorithm should cull most of the hidden geometry without incurring too much additional processing time. Culling should also be *conservative*, meaning that no geometry that should be visible is accidentally culled.
 
