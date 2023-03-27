@@ -31,7 +31,7 @@ The biggest performance improvement comes from occlusion culling. This culls obj
 
 ldr_wgpu uses a form of [hierarchical-z map occlusion culling](https://www.rastergrid.com/blog/2010/10/hierarchical-z-map-based-occlusion-culling/). This runs every frame and doesn't require any kind of expensive preprocessing of the model. The basic technique starts by rendering an occluder pass. This produces a mipmapped depth map. This depth map is then used to efficiently determine which objects in the high detailed main pass are occluded by other objects. Each object can be efficiently and conservatively occlusion culled by computing just the position of the corners of its axis-aligned bounding box and checking a 2x2 pixel region from a mip of the occluder depth map. 
 
-Accurate occlusion culling in this way requires accurate depth information. Using a separate depth only occluder pass avoids issues with reusing the previous frame's depth like depth reprojection. Rendering the same scene twice defeats the point of culling. The cost of the occluder pass plus the occluded main pass should be less than the non occluded main pass. This is accomplished by using a very low detailed model for the occluder pass. Parts are rendered with the lowest possible fidelity any color information removed. While it may be tempting to use bounding boxes, modifying the object silhouttes will result in inaccurate occlusion tests. The final render time ends up being significantly faster in many cases than just drawing the main pass without any occlusion.
+Accurate occlusion culling in this way requires accurate depth information. Using a separate depth only occluder pass avoids issues with reusing the previous frame's depth like depth reprojection. Rendering the same scene twice defeats the point of culling. The cost of the occluder pass plus the occluded main pass should be less than the non occluded main pass. This is accomplished by using a very low detailed model for the occluder pass. Parts are rendered with the lowest possible fidelity with any color information removed. While it may be tempting to use bounding boxes, modifying the object silhouttes will result in inaccurate occlusion tests. The final render time ends up being significantly faster in many cases than just drawing the main pass without any occlusion.
 
 ## Compatibility
 The code is built using WGPU and targets modern GPU hardware for newer versions of Windows, Linux, and MacOS. The renderer takes advantage of modern features not available on older devices and requires DX12, Vulkan, or Metal support. This includes most GPUs and devices manufactured after 2010.
@@ -40,7 +40,6 @@ The code is built using WGPU and targets modern GPU hardware for newer versions 
 With a newer version of the Rust toolchain installed, run cargo build --release. Don't forget the --release since debug builds in Rust will run slowly. Run the program as `cargo run --release <ldraw library path> <ldraw file path>`.
 
 ## Copyrights
-
 LDraw™ is a trademark owned and licensed by the Jessiman Estate, which does not sponsor, endorse, or authorize this project.
 
 LEGO® is a registered trademark of the LEGO Group, which does not sponsor, endorse, or authorize this project.
