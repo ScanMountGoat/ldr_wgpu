@@ -16,7 +16,7 @@ Duplicate vertices are welded to reduce processing time later. ldr_tools accompl
 The geometry for each part is combined to reduce per object overhead. Fewer, larger draw calls tend to perform better than many small draw calls. This also makes it easy to cache geometry by the part name and color. Once the parts for the file are collected, each part can be converted to geometry in parallel to boost performance.
 
 ### Draw Calls
-Modern GPUs can render very efficiently. Careful organization of work into draw calls is very important to fully utilize the hardware. Issuing draw calls for each subpart or LDraw primitive creates significant overhead and leads to poor GPU utilization and performance. Merging the scene into a single draw call can be more efficient but makes it difficult to instance parts and modify parts later. 
+Modern GPUs are highly effective at processing large amounts of data in parallel. Careful organization of work into draw calls is very important to fully utilize the hardware. Issuing draw calls for each subpart or LDraw primitive creates significant overhead and leads to poor GPU utilization and performance. Merging the scene into a single draw call can be more efficient but makes it difficult to instance parts and modify parts later. 
 
 ldr_wgpu combines geometry for each each part into a single draw. Draws are batched together and issued as a single call using [indirect rendering](https://www.khronos.org/opengl/wiki/Vertex_Rendering#Indirect_rendering). Indirect rendering places draw call parameters in a buffer. This allows culling of individual parts to be calculated entirely on the GPU using compute shaders. All draws are indexed since this greatly reduces the amount of unique vertices that need to be processed by the GPU.
 
