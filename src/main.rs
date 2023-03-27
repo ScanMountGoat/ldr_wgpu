@@ -1067,6 +1067,7 @@ fn main() {
     // The occluder pass itself isn't occlusion culled,
     // so reducing the vertex count is critical for good performance.
     // Weld vertices to take advantage of vertex caching on the GPU.
+    // https://www.khronos.org/opengl/wiki/Post_Transform_Cache
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
