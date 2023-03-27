@@ -8,7 +8,6 @@ struct Camera {
     frustum: vec4<f32>,
     view: mat4x4<f32>,
     view_projection: mat4x4<f32>,
-    pyramid_dimensions: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -117,14 +116,16 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     max_xyz = max(max_xyz, aabb_corners[6]);
     max_xyz = max(max_xyz, aabb_corners[7]);
 
+    // An axis-aligned bounding box in screen space.
     let aabb = vec4(min_xyz.xy, max_xyz.xy);
 
     // Calculate the covered area in pixels for the base mip level.
-    let dimensions = (max_xyz.xy - min_xyz.xy) * camera.pyramid_dimensions.xy;
+    let dimensions = textureDimensions(depth_pyramid, 0);
+    let aabb_size_base_level = (max_xyz.xy - min_xyz.xy) * vec2(f32(dimensions.x), f32(dimensions.y));
 
     // Calculate the mip level that will be covered by 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
-    var level = ceil(log2(max(dimensions.x, dimensions.y)));
+    var level = ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y) / 2.0));
 
     // Compute the min depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses min for reduction.

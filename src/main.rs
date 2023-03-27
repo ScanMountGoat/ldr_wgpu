@@ -11,6 +11,9 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+use crate::pipeline::*;
+
+mod pipeline;
 mod shader;
 
 // The far plane can be infinity since we use reversed-z.
@@ -109,9 +112,7 @@ struct State {
 }
 
 struct DepthPyramid {
-    pyramid: wgpu::Texture,
     pyramid_view: wgpu::TextureView,
-    mips: Vec<wgpu::TextureView>,
     base_bind_group: shader::blit_depth::bind_groups::BindGroup0,
     mip_bind_groups: Vec<shader::depth_pyramid::bind_groups::BindGroup0>,
 }
@@ -228,8 +229,6 @@ impl State {
                 frustum: camera_data.frustum,
                 view_projection: camera_data.view_projection,
                 view: camera_data.view,
-                // Assume the pyramid shares the dimensions of the window.
-                pyramid_dimensions: vec4(size.width as f32, size.height as f32, 0.0, 0.0),
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -333,8 +332,6 @@ impl State {
                 frustum: camera_data.frustum,
                 view_projection: camera_data.view_projection,
                 view: camera_data.view,
-                // Assume the pyramid shares the dimensions of the window.
-                pyramid_dimensions: vec4(size.width as f32, size.height as f32, 0.0, 0.0),
             }]),
         );
     }
@@ -427,7 +424,7 @@ impl State {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Model Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_view,
+                view: output_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -642,9 +639,7 @@ fn create_depth_pyramid(
     let pyramid_view = pyramid.create_view(&wgpu::TextureViewDescriptor::default());
 
     DepthPyramid {
-        pyramid,
         pyramid_view,
-        mips: pyramid_mips,
         base_bind_group,
         mip_bind_groups: pyramid_bind_groups,
     }
@@ -670,95 +665,6 @@ fn depth_pyramid_bind_groups(
 
 const fn div_round_up(x: u32, d: u32) -> u32 {
     (x + d - 1) / d
-}
-
-fn create_culling_pipeline(device: &wgpu::Device, entry_point: &str) -> wgpu::ComputePipeline {
-    let shader = shader::culling::create_shader_module(device);
-    let render_pipeline_layout = shader::culling::create_pipeline_layout(device);
-
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Culling Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        module: &shader,
-        entry_point,
-    })
-}
-
-fn create_depth_pyramid_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
-    let shader = shader::depth_pyramid::create_shader_module(device);
-    let render_pipeline_layout = shader::depth_pyramid::create_pipeline_layout(device);
-
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Depth Pyramid Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        module: &shader,
-        entry_point: "main",
-    })
-}
-
-fn create_blit_depth_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
-    let shader = shader::blit_depth::create_shader_module(device);
-    let render_pipeline_layout = shader::blit_depth::create_pipeline_layout(device);
-
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Blit Depth Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        module: &shader,
-        entry_point: "main",
-    })
-}
-
-fn create_pipeline(
-    device: &wgpu::Device,
-    surface_format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    let shader = shader::model::create_shader_module(device);
-    let render_pipeline_layout = shader::model::create_pipeline_layout(device);
-
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Render Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[
-                shader::model::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                shader::model::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
-            ],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: "fs_main",
-            targets: &[Some(surface_format.into())],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(depth_stencil_reversed()),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    })
-}
-
-fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
-    let shader = shader::model::create_shader_module(device);
-    let render_pipeline_layout = shader::model::create_pipeline_layout(device);
-
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Occluder Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[
-                shader::model::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                shader::model::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
-            ],
-        },
-        fragment: None,
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(depth_stencil_reversed()),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    })
 }
 
 fn create_depth_texture(

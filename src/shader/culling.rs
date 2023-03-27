@@ -10,10 +10,9 @@ pub struct Camera {
     pub frustum: glam::Vec4,
     pub view: glam::Mat4,
     pub view_projection: glam::Mat4,
-    pub pyramid_dimensions: glam::Vec4,
 }
 const _: () = assert!(
-    std::mem::size_of:: < Camera > () == 176, "size of Camera does not match WGSL"
+    std::mem::size_of:: < Camera > () == 160, "size of Camera does not match WGSL"
 );
 const _: () = assert!(
     memoffset::offset_of!(Camera, z_near) == 0,
@@ -40,10 +39,6 @@ const _: () = assert!(
 const _: () = assert!(
     memoffset::offset_of!(Camera, view_projection) == 96,
     "offset of Camera.view_projection does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(Camera, pyramid_dimensions) == 160,
-    "offset of Camera.pyramid_dimensions does not match WGSL"
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
