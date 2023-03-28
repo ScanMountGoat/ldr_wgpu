@@ -65,14 +65,15 @@ struct DrawIndexedIndirect {
 struct IndirectSceneData {
     instance_transforms_buffer: wgpu::Buffer,
     instance_bounds_buffer: wgpu::Buffer,
-    draw_count: u32,
     vertex_buffer: wgpu::Buffer,
     // TODO: Group this into a type?
     index_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
+    draw_count: u32,
 
     edge_index_buffer: wgpu::Buffer,
     edge_indirect_buffer: wgpu::Buffer,
+    edge_draw_count: u32,
 }
 
 struct State {
@@ -657,7 +658,7 @@ fn draw_edge_indirect<'a>(
     render_pass.multi_draw_indexed_indirect(
         &indirect_data.edge_indirect_buffer,
         0,
-        indirect_data.draw_count,
+        indirect_data.edge_draw_count,
     );
 }
 
@@ -832,14 +833,14 @@ fn load_render_data(
         // Each draw uses a single instance to allow culling individual draws.
         for transform in transforms {
             // TODO: Is this the best way to eventually share culling information with edges?
-            let indirect_edge_draw = DrawIndexedIndirect {
+            let edge_indirect_draw = DrawIndexedIndirect {
                 vertex_count: combined_edge_indices.len() as u32 - base_edge_index,
                 instance_count: 1,
                 base_index: base_edge_index,
                 vertex_offset,
                 base_instance: combined_transforms.len() as u32,
             };
-            edge_indirect_draws.push(indirect_edge_draw);
+            edge_indirect_draws.push(edge_indirect_draw);
 
             let draw = DrawIndexedIndirect {
                 vertex_count: geometry.vertex_indices.len() as u32,
@@ -904,8 +905,6 @@ fn load_render_data(
         usage: wgpu::BufferUsages::STORAGE,
     });
 
-    let draw_count = indirect_draws.len() as u32;
-
     IndirectSceneData {
         vertex_buffer,
         index_buffer,
@@ -914,7 +913,8 @@ fn load_render_data(
         instance_bounds_buffer,
         indirect_buffer,
         edge_indirect_buffer,
-        draw_count,
+        edge_draw_count: edge_indirect_draws.len() as u32,
+        draw_count: indirect_draws.len() as u32,
     }
 }
 
@@ -970,15 +970,7 @@ fn append_geometry(
     color_table: &HashMap<u32, LDrawColor>,
 ) {
     // TODO: Edge colors?
-    // Sharp edges define the outlines rendered in instructions or editing applications.
-    edge_indices.extend(
-        geometry
-            .edges
-            .iter()
-            .zip(geometry.is_edge_sharp.iter())
-            .filter(|(_, sharp)| **sharp)
-            .flat_map(|(e, _)| *e),
-    );
+    // TODO: Don't calculate grainy faces to save geometry?
 
     // TODO: missing color codes?
     // TODO: publicly expose color handling logic in ldr_tools.
@@ -998,8 +990,20 @@ fn append_geometry(
                     }),
             );
             vertex_indices.extend_from_slice(&geometry.vertex_indices);
+
+            // Sharp edges define the outlines rendered in instructions or editing applications.
+            edge_indices.extend(
+                geometry
+                    .edges
+                    .iter()
+                    .zip(geometry.is_edge_sharp.iter())
+                    .filter(|(_, sharp)| **sharp)
+                    .flat_map(|(e, _)| *e),
+            );
         }
         face_colors => {
+            let mut old_to_new_index = vec![0; geometry.vertex_indices.len()];
+
             // Assume faces are already triangulated.
             // Make each vertex unique to convert per face to vertex coloring.
             // This means every 3 vertices defines a new face.
@@ -1013,7 +1017,24 @@ fn append_geometry(
                 };
                 vertices.push(new_vertex);
                 vertex_indices.push(i as u32);
+                old_to_new_index[*vertex_index as usize] = i as u32;
             }
+
+            // The vertices have been reindexed, so use the mapping from earlier.
+            // This ensures the sharp edge indices reference the correct vertices.
+            edge_indices.extend(
+                geometry
+                    .edges
+                    .iter()
+                    .zip(geometry.is_edge_sharp.iter())
+                    .filter(|(_, sharp)| **sharp)
+                    .flat_map(|([v0, v1], _)| {
+                        [
+                            old_to_new_index[*v0 as usize],
+                            old_to_new_index[*v1 as usize],
+                        ]
+                    }),
+            );
         }
     }
 }
