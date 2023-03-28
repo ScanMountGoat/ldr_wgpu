@@ -123,11 +123,21 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
 
     // Calculate the covered area in pixels for the base mip level.
     let dimensions = textureDimensions(depth_pyramid, 0);
-    let aabb_size_base_level = (max_xyz.xy - min_xyz.xy) * vec2(f32(dimensions.x), f32(dimensions.y));
+    let aabb_size = max_xyz.xy - min_xyz.xy;
+    let aabb_size_base_level = aabb_size * vec2(f32(dimensions.x), f32(dimensions.y));
 
     // Calculate the mip level that will be covered by 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
     var level = ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y))) - 1.0;
+
+    // Use the lower level if the AABB covers less than 2 texels in both dimensions.
+    // This helps reduce some flickering viewing objects at oblique angles.
+    let level_lower = max(level - 1.0, 0.0);
+    let scale = exp2(-level_lower);
+    let dims_level = ceil(aabb.zw * scale) - floor(aabb.xy * scale);
+    if (dims_level.x < 2.0 || dims_level.y < 2.0) {
+        level = level_lower;
+    }
 
     // Compute the min depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses min for reduction.

@@ -25,7 +25,7 @@ fn depth_stencil_reversed() -> wgpu::DepthStencilState {
         // Reversed-z
         format: wgpu::TextureFormat::Depth32Float,
         depth_write_enabled: true,
-        depth_compare: wgpu::CompareFunction::Greater,
+        depth_compare: wgpu::CompareFunction::GreaterEqual,
         stencil: Default::default(),
         bias: Default::default(),
     }
@@ -119,7 +119,6 @@ struct State {
 struct DepthPyramid {
     width: u32,
     height: u32,
-    base_mip: wgpu::TextureView,
     all_mips: wgpu::TextureView,
     base_bind_group: shader::blit_depth::bind_groups::BindGroup0,
     mip_bind_groups: Vec<shader::depth_pyramid::bind_groups::BindGroup0>,
@@ -249,7 +248,7 @@ impl State {
         let depth_pyramid_pipeline = create_depth_pyramid_pipeline(&device);
         let blit_depth_pipeline = create_blit_depth_pipeline(&device);
 
-        let depth_pyramid = create_depth_pyramid(&device, size);
+        let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
 
         // Use a point sampler since filtering is done manually.
         let depth_pyramid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -366,7 +365,7 @@ impl State {
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
 
-            self.depth_pyramid = create_depth_pyramid(&self.device, new_size);
+            self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
 
             // The textures were updated, so use views pointing to the new textures.
             self.culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
@@ -418,7 +417,7 @@ impl State {
             label: Some("Occluder Pass"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_pyramid.base_mip,
+                view: &self.depth_view,
                 depth_ops: Some(depth_op_reversed()),
                 stencil_ops: None,
             }),
@@ -453,6 +452,13 @@ impl State {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
                 depth_ops: Some(depth_op_reversed()),
+                // Load the depth from the occluder pass.
+                // This almost completely eliminates overdraw in this pass.
+                // TODO: investigate flickering due to precision issues.
+                // depth_ops: Some(wgpu::Operations {
+                //     load: wgpu::LoadOp::Load,
+                //     store: true,
+                // }),
                 stencil_ops: None,
             }),
         });
@@ -662,31 +668,24 @@ fn draw_edge_indirect<'a>(
     );
 }
 
-fn previous_power_of_2(x: u32) -> u32 {
-    1 << (u32::BITS - 1 - x.leading_zeros())
-}
-
 fn create_depth_pyramid(
     device: &wgpu::Device,
     window_size: winit::dpi::PhysicalSize<u32>,
+    base_depth_view: &wgpu::TextureView,
 ) -> DepthPyramid {
     // Always use power of two dimensions to avoid edge cases when downsampling.
-    let width = previous_power_of_2(window_size.width);
-    let height = previous_power_of_2(window_size.height);
+    let width = window_size.width;
+    let height = window_size.height;
 
     let (pyramid, pyramid_mips) = create_depth_pyramid_texture(device, width, height);
     let pyramid_bind_groups = depth_pyramid_bind_groups(device, &pyramid_mips);
 
     let pyramid_view = pyramid.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Depth attachments can't have mipmaps.
-    // Create a separate texture for the occluder pass to use.
-    let (_, pyramid_base_mip_view) = create_depth_texture(device, width, height);
-
     let base_bind_group = shader::blit_depth::bind_groups::BindGroup0::from_bindings(
         device,
         shader::blit_depth::bind_groups::BindGroupLayout0 {
-            input: &pyramid_base_mip_view,
+            input: base_depth_view,
             output: &pyramid_mips[0],
         },
     );
@@ -694,7 +693,6 @@ fn create_depth_pyramid(
     DepthPyramid {
         width,
         height,
-        base_mip: pyramid_base_mip_view,
         all_mips: pyramid_view,
         base_bind_group,
         mip_bind_groups: pyramid_bind_groups,
