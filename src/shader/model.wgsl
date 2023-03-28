@@ -41,7 +41,8 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color;
+    // Premultiplied alpha.
+    return vec4(in.color.rgb * in.color.a, in.color.a);
 }
 
 // TODO: Is it better to use colors from a separate vertex buffer?

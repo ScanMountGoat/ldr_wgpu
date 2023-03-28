@@ -209,7 +209,7 @@ impl State {
         );
 
         let start = std::time::Instant::now();
-        let render_data = load_render_data(&device, scene, color_table);
+        let render_data = load_render_data(&device, scene, color_table, true);
         println!(
             "Load {} parts and {} unique parts: {:?}",
             render_data.draw_count,
@@ -220,7 +220,7 @@ impl State {
         // TODO: Avoid duplicating culling information?
         // TODO: Don't include color information since this is only used for depth.
         let start = std::time::Instant::now();
-        let render_data_occluder = load_render_data(&device, scene_occluder, color_table);
+        let render_data_occluder = load_render_data(&device, scene_occluder, color_table, false);
         println!(
             "Load {} parts and {} unique parts: {:?}",
             render_data.draw_count,
@@ -730,8 +730,8 @@ fn create_depth_texture(
     let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth texture"),
         size: wgpu::Extent3d {
-            width: width,
-            height: height,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -753,8 +753,8 @@ fn create_depth_pyramid_texture(
     height: u32,
 ) -> (wgpu::Texture, Vec<wgpu::TextureView>) {
     let size = wgpu::Extent3d {
-        width: width,
-        height: height,
+        width,
+        height,
         depth_or_array_layers: 1,
     };
     let mip_level_count = size.max_mips(wgpu::TextureDimension::D2);
@@ -786,6 +786,7 @@ fn load_render_data(
     device: &wgpu::Device,
     scene: &LDrawSceneInstanced,
     color_table: &HashMap<u32, LDrawColor>,
+    render_transparent: bool,
 ) -> IndirectSceneData {
     // Combine all data into a single multidraw indirect call.
     let mut combined_vertices = Vec::new();
@@ -797,7 +798,17 @@ fn load_render_data(
     let mut combined_edge_indices = Vec::new();
     let mut edge_indirect_draws = Vec::new();
 
-    for ((name, color), transforms) in &scene.geometry_world_transforms {
+    // Sort by color so that transparent draws happen last.
+    // Opaque objects evaluate to false and appear first when sorted.
+    let mut alpha_sorted: Vec<_> = scene.geometry_world_transforms.iter().collect();
+    alpha_sorted.sort_by_key(|((_, color), _)| is_transparent(color_table, color));
+
+    for ((name, color), transforms) in alpha_sorted {
+        // The occluder pass should not occlude transparent geometry.
+        if !render_transparent && is_transparent(color_table, color) {
+            continue;
+        }
+
         // Create separate vertex data if a part has multiple colors.
         // This is necessary since we store face colors per vertex.
         let geometry = &scene.geometry_cache[name];
@@ -905,6 +916,13 @@ fn load_render_data(
         edge_indirect_buffer,
         draw_count,
     }
+}
+
+fn is_transparent(color_table: &HashMap<u32, LDrawColor>, color: &u32) -> bool {
+    color_table
+        .get(color)
+        .map(|c| c.rgba_linear[3] < 1.0)
+        .unwrap_or_default()
 }
 
 fn calculate_instance_bounds(

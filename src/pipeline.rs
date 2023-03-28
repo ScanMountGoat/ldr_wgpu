@@ -22,16 +22,36 @@ pub fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: if edges { "fs_edge_main" } else { "fs_main" },
-            targets: &[Some(surface_format.into())],
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                // Premultiplied alpha.
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::all(),
+            })],
         }),
         primitive: if edges {
             wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Line,
                 topology: wgpu::PrimitiveTopology::LineList,
                 ..Default::default()
             }
         } else {
-            wgpu::PrimitiveState::default()
+            wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            }
         },
         depth_stencil: Some(depth_stencil_reversed()),
         multisample: wgpu::MultisampleState::default(),
