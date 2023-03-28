@@ -176,6 +176,7 @@ pub mod bind_groups {
     pub struct BindGroup1(wgpu::BindGroup);
     pub struct BindGroupLayout1<'a> {
         pub draws: wgpu::BufferBinding<'a>,
+        pub edge_draws: wgpu::BufferBinding<'a>,
         pub instance_bounds: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
@@ -195,6 +196,18 @@ pub mod bind_groups {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: false,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage {
@@ -224,6 +237,10 @@ pub mod bind_groups {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,
+                                resource: wgpu::BindingResource::Buffer(bindings.edge_draws),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
                                 resource: wgpu::BindingResource::Buffer(
                                     bindings.instance_bounds,
                                 ),

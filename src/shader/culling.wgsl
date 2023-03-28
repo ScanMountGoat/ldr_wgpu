@@ -28,8 +28,12 @@ struct DrawIndexedIndirect {
     base_instance: u32,
 }
 
+// TODO: Make these write only?
 @group(1) @binding(0)
 var<storage, read_write> draws: array<DrawIndexedIndirect>;
+
+@group(1) @binding(1)
+var<storage, read_write> edge_draws: array<DrawIndexedIndirect>;
 
 struct InstanceBounds {
     sphere: vec4<f32>,
@@ -37,7 +41,7 @@ struct InstanceBounds {
     max_xyz: vec4<f32>,
 }
 
-@group(1) @binding(1)
+@group(1) @binding(2)
 var<storage, read> instance_bounds: array<InstanceBounds>;
 
 fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
@@ -153,6 +157,7 @@ fn occlusion_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     if (is_occluded(min_xyz, max_xyz)) {
         draws[i].instance_count = 0u;
+        edge_draws[i].instance_count = 0u;
     }
 }
 
@@ -162,6 +167,7 @@ fn frustum_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Start with every object visible.
     let i = global_id.x;
     draws[i].instance_count = 1u;
+    edge_draws[i].instance_count = 1u;
 
     // Bounding spheres for frustum culling.
 	let bounding_sphere = instance_bounds[i].sphere;
@@ -170,5 +176,6 @@ fn frustum_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     if (!is_within_view_frustum(center_view, radius)) {
         draws[i].instance_count = 0u;
+        edge_draws[i].instance_count = 0u;
     }
 }

@@ -43,3 +43,9 @@ fn vs_main(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return in.color;
 }
+
+// TODO: Is it better to use colors from a separate vertex buffer?
+@fragment
+fn fs_edge_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4(0.0, 0.0, 0.0, 1.0);
+}

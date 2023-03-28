@@ -1,8 +1,9 @@
-use crate::{shader, depth_stencil_reversed};
+use crate::{depth_stencil_reversed, shader};
 
 pub fn create_pipeline(
     device: &wgpu::Device,
     surface_format: wgpu::TextureFormat,
+    edges: bool,
 ) -> wgpu::RenderPipeline {
     let shader = shader::model::create_shader_module(device);
     let render_pipeline_layout = shader::model::create_pipeline_layout(device);
@@ -20,10 +21,18 @@ pub fn create_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: "fs_main",
+            entry_point: if edges { "fs_edge_main" } else { "fs_main" },
             targets: &[Some(surface_format.into())],
         }),
-        primitive: wgpu::PrimitiveState::default(),
+        primitive: if edges {
+            wgpu::PrimitiveState {
+                polygon_mode: wgpu::PolygonMode::Line,
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            }
+        } else {
+            wgpu::PrimitiveState::default()
+        },
         depth_stencil: Some(depth_stencil_reversed()),
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
@@ -52,7 +61,6 @@ pub fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         multiview: None,
     })
 }
-
 
 pub fn create_culling_pipeline(device: &wgpu::Device, entry_point: &str) -> wgpu::ComputePipeline {
     let shader = shader::culling::create_shader_module(device);

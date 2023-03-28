@@ -66,10 +66,13 @@ struct IndirectSceneData {
     instance_transforms_buffer: wgpu::Buffer,
     instance_bounds_buffer: wgpu::Buffer,
     draw_count: u32,
-    // TODO: Duplicate this data for edges as well.
     vertex_buffer: wgpu::Buffer,
+    // TODO: Group this into a type?
     index_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
+
+    edge_index_buffer: wgpu::Buffer,
+    edge_indirect_buffer: wgpu::Buffer,
 }
 
 struct State {
@@ -95,6 +98,7 @@ struct State {
     // Render State
     bind_group0: shader::model::bind_groups::BindGroup0,
     model_pipeline: wgpu::RenderPipeline,
+    model_edges_pipeline: wgpu::RenderPipeline,
     occluder_pipeline: wgpu::RenderPipeline,
 
     camera_culling_buffer: wgpu::Buffer,
@@ -155,7 +159,8 @@ impl State {
                     label: None,
                     features: wgpu::Features::MULTI_DRAW_INDIRECT
                         | wgpu::Features::INDIRECT_FIRST_INSTANCE
-                        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+                        | wgpu::Features::POLYGON_MODE_LINE,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -176,7 +181,9 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let model_pipeline = create_pipeline(&device, surface_format);
+        let model_pipeline = create_pipeline(&device, surface_format, false);
+        let model_edges_pipeline = create_pipeline(&device, surface_format, true);
+
         let occluder_pipeline = create_occluder_pipeline(&device);
 
         let frustum_culling_pipeline = create_culling_pipeline(&device, "frustum_main");
@@ -268,6 +275,7 @@ impl State {
             &device,
             shader::culling::bind_groups::BindGroupLayout1 {
                 draws: render_data.indirect_buffer.as_entire_buffer_binding(),
+                edge_draws: render_data.edge_indirect_buffer.as_entire_buffer_binding(),
                 instance_bounds: render_data
                     .instance_bounds_buffer
                     .as_entire_buffer_binding(),
@@ -279,6 +287,9 @@ impl State {
             shader::culling::bind_groups::BindGroupLayout1 {
                 draws: render_data_occluder
                     .indirect_buffer
+                    .as_entire_buffer_binding(),
+                edge_draws: render_data_occluder
+                    .edge_indirect_buffer
                     .as_entire_buffer_binding(),
                 instance_bounds: render_data_occluder
                     .instance_bounds_buffer
@@ -293,6 +304,7 @@ impl State {
             size,
             config,
             model_pipeline,
+            model_edges_pipeline,
             occluder_pipeline,
             frustum_culling_pipeline,
             occlusion_culling_pipeline,
@@ -397,7 +409,6 @@ impl State {
 
         // Actually draw the frame.
         output.present();
-
         Ok(())
     }
 
@@ -422,10 +433,12 @@ impl State {
         );
 
         // TODO: make this a method?
+        // No edges are necessary for the occluder pass.
         draw_indirect(&mut render_pass, &self.render_data_occluder);
     }
 
     fn model_pass(&mut self, encoder: &mut wgpu::CommandEncoder, output_view: &wgpu::TextureView) {
+        // TODO: Multisampling?
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Model Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -443,8 +456,6 @@ impl State {
             }),
         });
 
-        render_pass.set_pipeline(&self.model_pipeline);
-
         shader::model::bind_groups::set_bind_groups(
             &mut render_pass,
             shader::model::bind_groups::BindGroups {
@@ -453,7 +464,11 @@ impl State {
         );
 
         // TODO: make this a method?
+        render_pass.set_pipeline(&self.model_pipeline);
         draw_indirect(&mut render_pass, &self.render_data);
+
+        render_pass.set_pipeline(&self.model_edges_pipeline);
+        draw_edge_indirect(&mut render_pass, &self.render_data);
     }
 
     fn frustum_culling_pass(
@@ -618,9 +633,29 @@ fn draw_indirect<'a>(render_pass: &mut wgpu::RenderPass<'a>, indirect_data: &'a 
     render_pass.set_vertex_buffer(1, indirect_data.instance_transforms_buffer.slice(..));
 
     // Draw each instance with a different transform.
-    // TODO: Use an indirect buffer that's always visible or just frustum culled.
     render_pass.multi_draw_indexed_indirect(
         &indirect_data.indirect_buffer,
+        0,
+        indirect_data.draw_count,
+    );
+}
+
+fn draw_edge_indirect<'a>(
+    render_pass: &mut wgpu::RenderPass<'a>,
+    indirect_data: &'a IndirectSceneData,
+) {
+    // Draw the instances of each unique part and color.
+    // This allows reusing most of the rendering state for better performance.
+    render_pass.set_index_buffer(
+        indirect_data.edge_index_buffer.slice(..),
+        wgpu::IndexFormat::Uint32,
+    );
+    render_pass.set_vertex_buffer(0, indirect_data.vertex_buffer.slice(..));
+    render_pass.set_vertex_buffer(1, indirect_data.instance_transforms_buffer.slice(..));
+
+    // Draw each instance with a different transform.
+    render_pass.multi_draw_indexed_indirect(
+        &indirect_data.edge_indirect_buffer,
         0,
         indirect_data.draw_count,
     );
@@ -759,17 +794,23 @@ fn load_render_data(
     let mut indirect_draws = Vec::new();
     let mut instance_bounds = Vec::new();
 
+    let mut combined_edge_indices = Vec::new();
+    let mut edge_indirect_draws = Vec::new();
+
     for ((name, color), transforms) in &scene.geometry_world_transforms {
         // Create separate vertex data if a part has multiple colors.
         // This is necessary since we store face colors per vertex.
         let geometry = &scene.geometry_cache[name];
 
+        // TODO:
         let base_index = combined_indices.len() as u32;
+        let base_edge_index = combined_edge_indices.len() as u32;
         let vertex_offset = combined_vertices.len() as i32;
 
         append_geometry(
             &mut combined_vertices,
             &mut combined_indices,
+            &mut combined_edge_indices,
             geometry,
             *color,
             color_table,
@@ -779,6 +820,16 @@ fn load_render_data(
         // The base instance steps through the transforms buffer.
         // Each draw uses a single instance to allow culling individual draws.
         for transform in transforms {
+            // TODO: Is this the best way to eventually share culling information with edges?
+            let indirect_edge_draw = DrawIndexedIndirect {
+                vertex_count: combined_edge_indices.len() as u32 - base_edge_index,
+                instance_count: 1,
+                base_index: base_edge_index,
+                vertex_offset,
+                base_instance: combined_transforms.len() as u32,
+            };
+            edge_indirect_draws.push(indirect_edge_draw);
+
             let draw = DrawIndexedIndirect {
                 vertex_count: geometry.vertex_indices.len() as u32,
                 instance_count: 1,
@@ -789,9 +840,7 @@ fn load_render_data(
             indirect_draws.push(draw);
 
             let bounds = calculate_instance_bounds(geometry, transform);
-
             instance_bounds.push(bounds);
-
             combined_transforms.push(*transform);
         }
     }
@@ -814,9 +863,21 @@ fn load_render_data(
         usage: wgpu::BufferUsages::INDEX,
     });
 
+    let edge_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("edge index buffer"),
+        contents: bytemuck::cast_slice(&combined_edge_indices),
+        usage: wgpu::BufferUsages::INDEX,
+    });
+
     let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("indirect buffer"),
         contents: bytemuck::cast_slice(&indirect_draws),
+        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+    });
+
+    let edge_indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("edge indirect buffer"),
+        contents: bytemuck::cast_slice(&edge_indirect_draws),
         usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
     });
 
@@ -837,9 +898,11 @@ fn load_render_data(
     IndirectSceneData {
         vertex_buffer,
         index_buffer,
+        edge_index_buffer,
         instance_transforms_buffer,
         instance_bounds_buffer,
         indirect_buffer,
+        edge_indirect_buffer,
         draw_count,
     }
 }
@@ -883,10 +946,22 @@ fn calculate_instance_bounds(
 fn append_geometry(
     vertices: &mut Vec<shader::model::VertexInput>,
     vertex_indices: &mut Vec<u32>,
+    edge_indices: &mut Vec<u32>,
     geometry: &ldr_tools::LDrawGeometry,
     color_code: u32,
     color_table: &HashMap<u32, LDrawColor>,
 ) {
+    // TODO: Edge colors?
+    // Sharp edges define the outlines rendered in instructions or editing applications.
+    edge_indices.extend(
+        geometry
+            .edges
+            .iter()
+            .zip(geometry.is_edge_sharp.iter())
+            .filter(|(_, sharp)| **sharp)
+            .flat_map(|(e, _)| *e),
+    );
+
     // TODO: missing color codes?
     // TODO: publicly expose color handling logic in ldr_tools.
     // TODO: handle the case where the face color list is empty?
