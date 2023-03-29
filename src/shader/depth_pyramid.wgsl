@@ -39,6 +39,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         value = min(value, textureLoad(input, vec2(x+1, y+2)));
     }
 
-    let coords = vec2(i32(global_id.x), i32(global_id.y));
-    textureStore(output, coords, value);
+    textureStore(output, vec2<i32>(global_id.xy), value);
 }

@@ -97,9 +97,8 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     let aabb = vec4(min_xyz.xy, max_xyz.xy);
 
     // Calculate the covered area in pixels for the base mip level.
-    let dimensions = textureDimensions(depth_pyramid, 0);
     let aabb_size = max_xyz.xy - min_xyz.xy;
-    let aabb_size_base_level = aabb_size * vec2(f32(dimensions.x), f32(dimensions.y));
+    let aabb_size_base_level = aabb_size * vec2<f32>(textureDimensions(depth_pyramid, 0));
 
     // Calculate the mip level that will be covered by at most 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
@@ -110,8 +109,7 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // See the Vulkan spec for a reference on linear filter calculations.
     // https://registry.khronos.org/vulkan/specs/1.3-khr-extensions/html/chap16.html#textures-unnormalized-to-integer
     let center = (aabb.xy + aabb.zw) * 0.5;
-    let dimensions_level = textureDimensions(depth_pyramid, level);
-    let center_coords = center * vec2(f32(dimensions_level.x), f32(dimensions_level.y)) - vec2(0.5);
+    let center_coords = center * vec2<f32>(textureDimensions(depth_pyramid, level)) - 0.5;
     let coord_x = i32(floor(center_coords.x));
     let coord_y = i32(floor(center_coords.y));
 
