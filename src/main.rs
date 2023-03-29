@@ -94,7 +94,6 @@ struct State {
     depth_pyramid_pipeline: wgpu::ComputePipeline,
     blit_depth_pipeline: wgpu::ComputePipeline,
     depth_pyramid: DepthPyramid,
-    depth_pyramid_sampler: wgpu::Sampler,
 
     // Render State
     bind_group0: shader::model::bind_groups::BindGroup0,
@@ -250,24 +249,11 @@ impl State {
 
         let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
 
-        // Use a point sampler since filtering is done manually.
-        let depth_pyramid_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("depth pyramid sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
         let culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
             &device,
             shader::culling::bind_groups::BindGroupLayout0 {
                 camera: camera_culling_buffer.as_entire_buffer_binding(),
                 depth_pyramid: &depth_pyramid.all_mips,
-                depth_pyramid_sampler: &depth_pyramid_sampler,
             },
         );
 
@@ -323,7 +309,6 @@ impl State {
             depth_pyramid,
             depth_pyramid_pipeline,
             blit_depth_pipeline,
-            depth_pyramid_sampler,
             input_state: Default::default(),
         }
     }
@@ -373,7 +358,6 @@ impl State {
                 shader::culling::bind_groups::BindGroupLayout0 {
                     camera: self.camera_culling_buffer.as_entire_buffer_binding(),
                     depth_pyramid: &self.depth_pyramid.all_mips,
-                    depth_pyramid_sampler: &self.depth_pyramid_sampler,
                 },
             );
         }

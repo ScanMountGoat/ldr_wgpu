@@ -101,7 +101,6 @@ pub mod bind_groups {
     pub struct BindGroupLayout0<'a> {
         pub camera: wgpu::BufferBinding<'a>,
         pub depth_pyramid: &'a wgpu::TextureView,
-        pub depth_pyramid_sampler: &'a wgpu::Sampler,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -128,12 +127,6 @@ pub mod bind_groups {
                 },
                 count: None,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
         ],
     };
     impl BindGroup0 {
@@ -155,12 +148,6 @@ pub mod bind_groups {
                                 binding: 1,
                                 resource: wgpu::BindingResource::TextureView(
                                     bindings.depth_pyramid,
-                                ),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::Sampler(
-                                    bindings.depth_pyramid_sampler,
                                 ),
                             },
                         ],

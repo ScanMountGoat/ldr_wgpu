@@ -1,4 +1,4 @@
-// frustum based culling adapted from here.
+// Frustum based culling adapted from here:
 // https://vkguide.dev/docs/gpudriven/compute_culling/
 struct Camera {
     z_near: f32,
@@ -16,9 +16,6 @@ var<uniform> camera: Camera;
 // Mipmapped version of the depth map.
 @group(0) @binding(1)
 var depth_pyramid: texture_2d<f32>;
-
-@group(0) @binding(2)
-var depth_pyramid_sampler: sampler;
 
 struct DrawIndexedIndirect {
     vertex_count: u32,
@@ -56,28 +53,6 @@ fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	return true;
 }
 
-// Adapted from the code from niagara:
-// https://github.com/zeux/niagara/blob/master/src/shaders/math.h
-// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
-// Original paper link: https://jcgt.org/published/0002/02/05/
-fn project_sphere(c: vec3<f32>, r: f32, z_near: f32, p00: f32, p11: f32) -> vec4<f32> {
-	let cr = c * r;
-	let czr2 = c.z * c.z - r * r;
-
-	let vx = sqrt(c.x * c.x + czr2);
-	let minx = (vx * c.x - cr.z) / (vx * c.z + cr.x);
-	let maxx = (vx * c.x + cr.z) / (vx * c.z - cr.x);
-
-	let vy = sqrt(c.y * c.y + czr2);
-	let miny = (vy * c.y - cr.z) / (vy * c.z + cr.y);
-	let maxy = (vy * c.y + cr.z) / (vy * c.z - cr.y);
-
-	var aabb = vec4(minx * p00, miny * p11, maxx * p00, maxy * p11);
-	aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
-
-	return aabb;
-}
-
 fn world_to_coords(position: vec3<f32>) -> vec3<f32> {
     var clip_pos = camera.view_projection * vec4(position, 1.0);
 
@@ -87,10 +62,10 @@ fn world_to_coords(position: vec3<f32>) -> vec3<f32> {
     return vec3(ndc_pos_xy, ndc_pos.z);
 }
 
-// https://interplayoflight.wordpress.com/2017/11/15/experiments-in-gpu-based-occlusion-culling/
 fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // Occlusion based culling using axis aligned bounding boxes.
     // Transform the corners to the same space as the depth map.
+    // https://interplayoflight.wordpress.com/2017/11/15/experiments-in-gpu-based-occlusion-culling/
     let aabb_corners = array<vec3<f32>, 8>(
         world_to_coords(min_xyz),
         world_to_coords(vec3(max_xyz.x, min_xyz.yz)),
@@ -126,27 +101,29 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     let aabb_size = max_xyz.xy - min_xyz.xy;
     let aabb_size_base_level = aabb_size * vec2(f32(dimensions.x), f32(dimensions.y));
 
-    // Calculate the mip level that will be covered by 2x2 pixels.
+    // Calculate the mip level that will be covered by at most 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
-    var level = ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y))) - 1.0;
+    var level = i32(ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y)))) - 1;
 
-    // Use the lower level if the AABB covers less than 2 texels in both dimensions.
-    // This helps reduce some flickering viewing objects at oblique angles.
-    let level_lower = max(level - 1.0, 0.0);
-    let scale = exp2(-level_lower);
-    let dims_level = ceil(aabb.zw * scale) - floor(aabb.xy * scale);
-    if (dims_level.x < 2.0 || dims_level.y < 2.0) {
-        level = level_lower;
-    }
+    // Get the coords of the texels accessed by a gather operation for the center.
+    // Using the bounding box center ensures all four texels are adjacent.
+    // See the Vulkan spec for a reference on linear filter calculations.
+    // https://registry.khronos.org/vulkan/specs/1.3-khr-extensions/html/chap16.html#textures-unnormalized-to-integer
+    let center = (aabb.xy + aabb.zw) * 0.5;
+    let dimensions_level = textureDimensions(depth_pyramid, level);
+    let center_coords = center * vec2(f32(dimensions_level.x), f32(dimensions_level.y)) - vec2(0.5);
+    let coord_x = i32(floor(center_coords.x));
+    let coord_y = i32(floor(center_coords.y));
 
     // Compute the min depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses min for reduction.
     // This helps make the occlusion conservative.
     // The comparisons are reversed since we use a reversed-z buffer.
-    let depth00 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xy, level).x;
-    let depth01 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zy, level).x;
-    let depth10 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.xw, level).x;
-    let depth11 = textureSampleLevel(depth_pyramid, depth_pyramid_sampler, aabb.zw, level).x;
+    // The AABB coordinates are between 0.0 and 1.0.
+    let depth00 = textureLoad(depth_pyramid, vec2(coord_x, coord_y), level).x;
+    let depth01 = textureLoad(depth_pyramid, vec2(coord_x+1, coord_y), level).x;
+    let depth10 = textureLoad(depth_pyramid, vec2(coord_x, coord_y+1), level).x;
+    let depth11 = textureLoad(depth_pyramid, vec2(coord_x+1, coord_y+1), level).x;
     let min_occluder_depth = min(min(depth00, depth01), min(depth10, depth11));
 
     // Check if the closest depth of the object exceeds the farthest occluder depth.
