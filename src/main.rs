@@ -2,7 +2,7 @@ use std::{collections::HashMap, num::NonZeroU32};
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
-use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, PrimitiveResolution, StudType};
+use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced};
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -65,6 +65,7 @@ struct DrawIndexedIndirect {
 struct IndirectSceneData {
     instance_transforms_buffer: wgpu::Buffer,
     instance_bounds_buffer: wgpu::Buffer,
+    visibility_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     // TODO: Group this into a type?
     index_buffer: wgpu::Buffer,
@@ -99,18 +100,14 @@ struct State {
     bind_group0: shader::model::bind_groups::BindGroup0,
     model_pipeline: wgpu::RenderPipeline,
     model_edges_pipeline: wgpu::RenderPipeline,
-    occluder_pipeline: wgpu::RenderPipeline,
 
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: shader::culling::bind_groups::BindGroup0,
     culling_bind_group1: shader::culling::bind_groups::BindGroup1,
-    culling_bind_group1_occluder: shader::culling::bind_groups::BindGroup1,
-    frustum_culling_pipeline: wgpu::ComputePipeline,
+    set_visibility_pipeline: wgpu::ComputePipeline,
     occlusion_culling_pipeline: wgpu::ComputePipeline,
 
     render_data: IndirectSceneData,
-    // TODO: Avoid overlap between these two versions of the scene.
-    render_data_occluder: IndirectSceneData,
 
     input_state: InputState,
 }
@@ -134,7 +131,6 @@ impl State {
     async fn new(
         window: &Window,
         scene: &LDrawSceneInstanced,
-        scene_occluder: &LDrawSceneInstanced,
         color_table: &HashMap<u32, LDrawColor>,
     ) -> Self {
         // TODO: Investigate why DX12 is so slow.
@@ -183,10 +179,8 @@ impl State {
         let model_pipeline = create_pipeline(&device, surface_format, false);
         let model_edges_pipeline = create_pipeline(&device, surface_format, true);
 
-        let occluder_pipeline = create_occluder_pipeline(&device);
-
-        let frustum_culling_pipeline = create_culling_pipeline(&device, "frustum_main");
-        let occlusion_culling_pipeline = create_culling_pipeline(&device, "occlusion_main");
+        let set_visibility_pipeline = create_culling_pipeline(&device, "set_visibility_main");
+        let culling_pipeline = create_culling_pipeline(&device, "culling_main");
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
@@ -208,18 +202,7 @@ impl State {
         );
 
         let start = std::time::Instant::now();
-        let render_data = load_render_data(&device, scene, color_table, true);
-        println!(
-            "Load {} parts and {} unique parts: {:?}",
-            render_data.draw_count,
-            scene.geometry_cache.len(),
-            start.elapsed()
-        );
-
-        // TODO: Avoid duplicating culling information?
-        // TODO: Don't include color information since this is only used for depth.
-        let start = std::time::Instant::now();
-        let render_data_occluder = load_render_data(&device, scene_occluder, color_table, false);
+        let render_data = load_render_data(&device, scene, color_table);
         println!(
             "Load {} parts and {} unique parts: {:?}",
             render_data.draw_count,
@@ -265,21 +248,7 @@ impl State {
                 instance_bounds: render_data
                     .instance_bounds_buffer
                     .as_entire_buffer_binding(),
-            },
-        );
-
-        let culling_bind_group1_occluder = shader::culling::bind_groups::BindGroup1::from_bindings(
-            &device,
-            shader::culling::bind_groups::BindGroupLayout1 {
-                draws: render_data_occluder
-                    .indirect_buffer
-                    .as_entire_buffer_binding(),
-                edge_draws: render_data_occluder
-                    .edge_indirect_buffer
-                    .as_entire_buffer_binding(),
-                instance_bounds: render_data_occluder
-                    .instance_bounds_buffer
-                    .as_entire_buffer_binding(),
+                visibility: render_data.visibility_buffer.as_entire_buffer_binding(),
             },
         );
 
@@ -291,15 +260,12 @@ impl State {
             config,
             model_pipeline,
             model_edges_pipeline,
-            occluder_pipeline,
-            frustum_culling_pipeline,
-            occlusion_culling_pipeline,
+            set_visibility_pipeline,
+            occlusion_culling_pipeline: culling_pipeline,
             culling_bind_group0,
             culling_bind_group1,
-            culling_bind_group1_occluder,
             bind_group0,
             render_data,
-            render_data_occluder,
             translation,
             rotation_xyz,
             camera_buffer,
@@ -375,19 +341,20 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
-        // Apply cheap and accurate culling methods first.
-        self.frustum_culling_pass(&mut encoder, &self.culling_bind_group1);
-        self.frustum_culling_pass(&mut encoder, &self.culling_bind_group1_occluder);
+        // Use a two pass conservative culling scheme introduced in the following paper:
+        // "Patch-Based Occlusion Culling for Hardware Tessellation"
+        // http://www.graphics.stanford.edu/~niessner/papers/2012/2occlusion/niessner2012patch.pdf
 
-        // Use a lower detailed scene for generating the occlusion depth map.
-        self.occluder_pass(&mut encoder);
+        // Draw everything that was visible last frame.
+        self.set_visibility_pass(&mut encoder);
+        self.previously_visible_pass(&mut encoder, &output_view);
+
+        // Apply culling to set visibility and enable newly visible objects.
         self.depth_pyramid_pass(&mut encoder);
-
-        // Occlude the high detailed draws using the occlusion depth map.
-        // This saves time if low detail + high detail occluded <  high detail.
         self.occlusion_culling_pass(&mut encoder);
 
-        self.model_pass(&mut encoder, &output_view);
+        // Draw everything that is newly visibile in this frame.
+        self.newly_visible_pass(&mut encoder, &output_view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -396,35 +363,14 @@ impl State {
         Ok(())
     }
 
-    fn occluder_pass(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Occluder Pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
-                depth_ops: Some(depth_op_reversed()),
-                stencil_ops: None,
-            }),
-        });
-
-        render_pass.set_pipeline(&self.occluder_pipeline);
-
-        shader::model::bind_groups::set_bind_groups(
-            &mut render_pass,
-            shader::model::bind_groups::BindGroups {
-                bind_group0: &self.bind_group0,
-            },
-        );
-
-        // TODO: make this a method?
-        // No edges are necessary for the occluder pass.
-        draw_indirect(&mut render_pass, &self.render_data_occluder);
-    }
-
-    fn model_pass(&mut self, encoder: &mut wgpu::CommandEncoder, output_view: &wgpu::TextureView) {
+    fn previously_visible_pass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        output_view: &wgpu::TextureView,
+    ) {
         // TODO: Multisampling?
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Model Pass"),
+            label: Some("Previously Visible Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: output_view,
                 resolve_target: None,
@@ -436,13 +382,6 @@ impl State {
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
                 depth_ops: Some(depth_op_reversed()),
-                // Load the depth from the occluder pass.
-                // This almost completely eliminates overdraw in this pass.
-                // TODO: investigate flickering due to precision issues.
-                // depth_ops: Some(wgpu::Operations {
-                //     load: wgpu::LoadOp::Load,
-                //     store: true,
-                // }),
                 stencil_ops: None,
             }),
         });
@@ -462,26 +401,64 @@ impl State {
         draw_edge_indirect(&mut render_pass, &self.render_data);
     }
 
-    fn frustum_culling_pass(
-        &self,
+    fn newly_visible_pass(
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        bind_group1: &shader::culling::bind_groups::BindGroup1,
+        output_view: &wgpu::TextureView,
     ) {
-        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("Frustum Culling Pass"),
+        // TODO: Multisampling?
+        // Load the data from the first model pass.
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Newly Visible Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: true,
+                }),
+                stencil_ops: None,
+            }),
         });
 
-        compute_pass.set_pipeline(&self.frustum_culling_pipeline);
+        shader::model::bind_groups::set_bind_groups(
+            &mut render_pass,
+            shader::model::bind_groups::BindGroups {
+                bind_group0: &self.bind_group0,
+            },
+        );
+
+        // TODO: make this a method?
+        render_pass.set_pipeline(&self.model_pipeline);
+        draw_indirect(&mut render_pass, &self.render_data);
+
+        render_pass.set_pipeline(&self.model_edges_pipeline);
+        draw_edge_indirect(&mut render_pass, &self.render_data);
+    }
+
+    fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Set Visibility Pass"),
+        });
+
+        compute_pass.set_pipeline(&self.set_visibility_pipeline);
         shader::culling::bind_groups::set_bind_groups(
             &mut compute_pass,
             shader::culling::bind_groups::BindGroups {
                 bind_group0: &self.culling_bind_group0,
-                bind_group1,
+                bind_group1: &self.culling_bind_group1,
             },
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = shader::culling::compute::FRUSTUM_MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = shader::culling::compute::SET_VISIBILITY_MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -501,7 +478,7 @@ impl State {
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = shader::culling::compute::OCCLUSION_MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = shader::culling::compute::CULLING_MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -769,7 +746,6 @@ fn load_render_data(
     device: &wgpu::Device,
     scene: &LDrawSceneInstanced,
     color_table: &HashMap<u32, LDrawColor>,
-    render_transparent: bool,
 ) -> IndirectSceneData {
     // Combine all data into a single multidraw indirect call.
     let mut combined_vertices = Vec::new();
@@ -781,22 +757,17 @@ fn load_render_data(
     let mut combined_edge_indices = Vec::new();
     let mut edge_indirect_draws = Vec::new();
 
+    // TODO: How to ensure transparent objects only appear in the newly visible pass?
     // Sort by color so that transparent draws happen last.
     // Opaque objects evaluate to false and appear first when sorted.
     let mut alpha_sorted: Vec<_> = scene.geometry_world_transforms.iter().collect();
     alpha_sorted.sort_by_key(|((_, color), _)| is_transparent(color_table, color));
 
     for ((name, color), transforms) in alpha_sorted {
-        // The occluder pass should not occlude transparent geometry.
-        if !render_transparent && is_transparent(color_table, color) {
-            continue;
-        }
-
         // Create separate vertex data if a part has multiple colors.
         // This is necessary since we store face colors per vertex.
         let geometry = &scene.geometry_cache[name];
 
-        // TODO:
         let base_index = combined_indices.len() as u32;
         let base_edge_index = combined_edge_indices.len() as u32;
         let vertex_offset = combined_vertices.len() as i32;
@@ -814,7 +785,7 @@ fn load_render_data(
         // The base instance steps through the transforms buffer.
         // Each draw uses a single instance to allow culling individual draws.
         for transform in transforms {
-            // TODO: Is this the best way to eventually share culling information with edges?
+            // TODO: Is this the best way to share culling information with edges?
             let edge_indirect_draw = DrawIndexedIndirect {
                 vertex_count: combined_edge_indices.len() as u32 - base_edge_index,
                 instance_count: 1,
@@ -887,10 +858,18 @@ fn load_render_data(
         usage: wgpu::BufferUsages::STORAGE,
     });
 
+    // TODO: Set half of all objects to visible?
+    let visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("visibility buffer"),
+        contents: bytemuck::cast_slice(&vec![0u32; indirect_draws.len()]),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     IndirectSceneData {
         vertex_buffer,
         index_buffer,
         edge_index_buffer,
+        visibility_buffer,
         instance_transforms_buffer,
         instance_bounds_buffer,
         indirect_buffer,
@@ -1087,24 +1066,9 @@ fn main() {
     let ldraw_path = &args[1];
     let path = &args[2];
 
-    // Use the lowest possible quality for the occluder pass.
-    // The occluder pass itself isn't occlusion culled,
-    // so reducing the vertex count is critical for good performance.
     // Weld vertices to take advantage of vertex caching on the GPU.
     // https://www.khronos.org/opengl/wiki/Post_Transform_Cache
-    let start = std::time::Instant::now();
-    let settings = GeometrySettings {
-        triangulate: true,
-        weld_vertices: true,
-        stud_type: StudType::Disabled,
-        primitive_resolution: PrimitiveResolution::Low,
-        ..Default::default()
-    };
-    // TODO: Don't include any transparent parts since they shouldn't occlude anything.
-    // TODO: Ignore stickers and replace patterned with non patterned versions.
-    let scene_occluder = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
-    println!("Load scene occluder: {:?}", start.elapsed());
-
+    // TODO: Is it worth applying a more optimal vertex ordering?
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
@@ -1123,7 +1087,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = block_on(State::new(&window, &scene, &scene_occluder, &color_table));
+    let mut state = block_on(State::new(&window, &scene, &color_table));
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent {
             ref event,

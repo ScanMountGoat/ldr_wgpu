@@ -59,29 +59,6 @@ pub fn create_pipeline(
     })
 }
 
-pub fn create_occluder_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
-    let shader = shader::model::create_shader_module(device);
-    let render_pipeline_layout = shader::model::create_pipeline_layout(device);
-
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("Occluder Pipeline"),
-        layout: Some(&render_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[
-                shader::model::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                shader::model::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
-            ],
-        },
-        fragment: None,
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: Some(depth_stencil_reversed()),
-        multisample: wgpu::MultisampleState::default(),
-        multiview: None,
-    })
-}
-
 pub fn create_culling_pipeline(device: &wgpu::Device, entry_point: &str) -> wgpu::ComputePipeline {
     let shader = shader::culling::create_shader_module(device);
     let render_pipeline_layout = shader::culling::create_pipeline_layout(device);

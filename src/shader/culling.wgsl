@@ -41,6 +41,9 @@ struct InstanceBounds {
 @group(1) @binding(2)
 var<storage, read> instance_bounds: array<InstanceBounds>;
 
+@group(1) @binding(3)
+var<storage, read_write> visibility: array<u32>;
+
 fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	// Cull objects completely outside the viewing frustum.
 	if (center.z * camera.frustum.y - abs(center.x) * camera.frustum.x < -radius) {
@@ -130,13 +133,14 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     return max_xyz.z < min_occluder_depth;
 }
 
-@compute
-@workgroup_size(256)
-fn occlusion_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    // Assume all the arrays have the same length.
-    let index = global_id.x;
-    if (index >= arrayLength(&draws)) {
-        return;
+fn is_visible(index: u32) -> bool {
+    // Bounding spheres for frustum culling.
+	let bounding_sphere = instance_bounds[index].sphere;
+    let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
+    let radius = bounding_sphere.w;
+
+    if (!is_within_view_frustum(center_view, radius)) {
+        return false;
     }
 
     // Axis-aligned bounding box for occlusion culling.
@@ -145,31 +149,56 @@ fn occlusion_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Use the existing state for visibility.
     if (is_occluded(min_xyz, max_xyz)) {
-        draws[index].instance_count = 0u;
-        // TODO: don't assume these lengths are the same.
-        edge_draws[index].instance_count = 0u;
+        return false;
     }
+
+    return true;
 }
 
 @compute
 @workgroup_size(256)
-fn frustum_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+fn culling_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Assume all the arrays have the same length.
     let index = global_id.x;
     if (index >= arrayLength(&draws)) {
         return;
     }
 
-    // Start with every object visible.
-    draws[index].instance_count = 1u;
-    edge_draws[index].instance_count = 1u;
+    // Set visibility for all objects based on culling.
+    // This serves as a visibility estimate for next frame.
+    let visible = is_visible(index);
+    if (visible) {
+        visibility[index] = 1u;
+    } else {
+        visibility[index] = 0u;
+    }
 
-    // Bounding spheres for frustum culling.
-	let bounding_sphere = instance_bounds[index].sphere;
-    let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
-    let radius = bounding_sphere.w;
+    // Only set the instance count to 1 for newly visible objects.
+    // This ensures the culling is still conservative with inaccurate estimates.
+    // TODO: Always assume draws and edge draws have the same length?
+    let previously_visible = draws[index].instance_count != 0u;
+    if (visible && !previously_visible) {
+        draws[index].instance_count = 1u;
+        edge_draws[index].instance_count = 1u;
+    } else {
+        draws[index].instance_count = 0u;
+        edge_draws[index].instance_count = 0u;
+    }
+}
 
-    if (!is_within_view_frustum(center_view, radius)) {
+@compute
+@workgroup_size(256)
+fn set_visibility_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    // Assume all the arrays have the same length.
+    let index = global_id.x;
+    if (index >= arrayLength(&draws)) {
+        return;
+    }
+
+    if (visibility[index] != 0u) {
+        draws[index].instance_count = 1u;
+        edge_draws[index].instance_count = 1u;
+    } else {
         draws[index].instance_count = 0u;
         edge_draws[index].instance_count = 0u;
     }

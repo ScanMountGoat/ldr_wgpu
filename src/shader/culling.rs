@@ -165,6 +165,7 @@ pub mod bind_groups {
         pub draws: wgpu::BufferBinding<'a>,
         pub edge_draws: wgpu::BufferBinding<'a>,
         pub instance_bounds: wgpu::BufferBinding<'a>,
+        pub visibility: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -205,6 +206,18 @@ pub mod bind_groups {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: false,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     };
     impl BindGroup1 {
@@ -232,6 +245,10 @@ pub mod bind_groups {
                                     bindings.instance_bounds,
                                 ),
                             },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Buffer(bindings.visibility),
+                            },
                         ],
                         label: None,
                     },
@@ -255,8 +272,8 @@ pub mod bind_groups {
     }
 }
 pub mod compute {
-    pub const OCCLUSION_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
-    pub const FRUSTUM_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
+    pub const CULLING_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
+    pub const SET_VISIBILITY_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(include_str!("culling.wgsl"));
