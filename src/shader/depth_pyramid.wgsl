@@ -7,6 +7,12 @@ var output: texture_storage_2d<r32float, write>;
 @compute
 @workgroup_size(16, 16, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let output_dimensions = textureDimensions(input);
+    let output_coords = vec2<i32>(global_id.xy);
+    if (output_coords.x >= output_dimensions.x || output_coords.y >= output_dimensions.y) {
+        return;
+    }
+
     // The input should have twice the resolution of the output.
     let x = i32(global_id.x) * 2;
     let y = i32(global_id.y) * 2;
@@ -39,5 +45,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         value = min(value, textureLoad(input, vec2(x+1, y+2)));
     }
 
-    textureStore(output, vec2<i32>(global_id.xy), value);
+    textureStore(output, output_coords, value);
 }

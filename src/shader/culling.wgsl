@@ -133,34 +133,44 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
 @compute
 @workgroup_size(256)
 fn occlusion_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    // Use the existing state for visibility.
-    let i = global_id.x;
+    // Assume all the arrays have the same length.
+    let index = global_id.x;
+    if (index >= arrayLength(&draws)) {
+        return;
+    }
 
     // Axis-aligned bounding box for occlusion culling.
-    let min_xyz = instance_bounds[i].min_xyz.xyz;
-    let max_xyz = instance_bounds[i].max_xyz.xyz;
+    let min_xyz = instance_bounds[index].min_xyz.xyz;
+    let max_xyz = instance_bounds[index].max_xyz.xyz;
 
+    // Use the existing state for visibility.
     if (is_occluded(min_xyz, max_xyz)) {
-        draws[i].instance_count = 0u;
-        edge_draws[i].instance_count = 0u;
+        draws[index].instance_count = 0u;
+        // TODO: don't assume these lengths are the same.
+        edge_draws[index].instance_count = 0u;
     }
 }
 
 @compute
 @workgroup_size(256)
 fn frustum_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    // Assume all the arrays have the same length.
+    let index = global_id.x;
+    if (index >= arrayLength(&draws)) {
+        return;
+    }
+
     // Start with every object visible.
-    let i = global_id.x;
-    draws[i].instance_count = 1u;
-    edge_draws[i].instance_count = 1u;
+    draws[index].instance_count = 1u;
+    edge_draws[index].instance_count = 1u;
 
     // Bounding spheres for frustum culling.
-	let bounding_sphere = instance_bounds[i].sphere;
+	let bounding_sphere = instance_bounds[index].sphere;
     let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
     let radius = bounding_sphere.w;
 
     if (!is_within_view_frustum(center_view, radius)) {
-        draws[i].instance_count = 0u;
-        edge_draws[i].instance_count = 0u;
+        draws[index].instance_count = 0u;
+        edge_draws[index].instance_count = 0u;
     }
 }
