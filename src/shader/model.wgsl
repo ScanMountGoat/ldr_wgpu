@@ -22,6 +22,15 @@ struct VertexOutput {
     @location(0) color: vec4<f32>,
 }
 
+fn unpack_color(color: u32) -> vec4<f32> {
+    // wgpu doesn't support unpack4x8unorm for DX12.
+    let r = f32(color & 0xFFu);
+    let g = f32((color >> 8u) & 0xFFu);
+    let b = f32((color >> 16u) & 0xFFu);
+    let a = f32((color >> 24u) & 0xFFu);
+    return vec4(r, g, b, a) / 255.0;
+}
+
 @vertex
 fn vs_main(
     model: VertexInput,
@@ -35,7 +44,7 @@ fn vs_main(
     );
     var out: VertexOutput;
     out.clip_position = camera.view_projection * model_matrix * vec4<f32>(model.position.xyz, 1.0);
-    out.color = unpack4x8unorm(model.color);
+    out.color = unpack_color(model.color);
     return out;
 }
 

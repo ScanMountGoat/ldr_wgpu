@@ -133,9 +133,8 @@ impl State {
         scene: &LDrawSceneInstanced,
         color_table: &HashMap<u32, LDrawColor>,
     ) -> Self {
-        // TODO: Investigate why DX12 is so slow.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL,
+            backends: wgpu::Backends::all(),
             ..Default::default()
         });
         let surface = unsafe { instance.create_surface(window).unwrap() };
@@ -147,6 +146,7 @@ impl State {
             })
             .await
             .unwrap();
+        println!("{:#?}", adapter.get_info());
 
         let (device, queue) = adapter
             .request_device(
@@ -344,6 +344,9 @@ impl State {
         // Use a two pass conservative culling scheme introduced in the following paper:
         // "Patch-Based Occlusion Culling for Hardware Tessellation"
         // http://www.graphics.stanford.edu/~niessner/papers/2012/2occlusion/niessner2012patch.pdf
+
+        // TODO: look into stream compaction since many objects get culled each frame.
+        // If the scene doesn't change, the second pass will be entirely zeroed out.
 
         // Draw everything that was visible last frame.
         self.set_visibility_pass(&mut encoder);
@@ -1083,7 +1086,6 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title(concat!("ldr_wgpu ", env!("CARGO_PKG_VERSION")))
-        // .with_inner_size(winit::dpi::PhysicalSize { width: 1024.0, height: 1024.0 })
         .build(&event_loop)
         .unwrap();
 
