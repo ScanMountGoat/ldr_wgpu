@@ -2,7 +2,7 @@ use std::{collections::HashMap, num::NonZeroU32};
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
-use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced};
+use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -1076,6 +1076,7 @@ fn main() {
     let settings = GeometrySettings {
         triangulate: true,
         weld_vertices: true,
+        stud_type: StudType::HighContrast,
         ..Default::default()
     };
     let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
