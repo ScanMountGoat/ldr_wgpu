@@ -42,39 +42,6 @@ const _: () = assert!(
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DrawIndexedIndirect {
-    pub vertex_count: u32,
-    pub instance_count: u32,
-    pub base_index: u32,
-    pub vertex_offset: i32,
-    pub base_instance: u32,
-}
-const _: () = assert!(
-    std::mem::size_of:: < DrawIndexedIndirect > () == 20,
-    "size of DrawIndexedIndirect does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(DrawIndexedIndirect, vertex_count) == 0,
-    "offset of DrawIndexedIndirect.vertex_count does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(DrawIndexedIndirect, instance_count) == 4,
-    "offset of DrawIndexedIndirect.instance_count does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(DrawIndexedIndirect, base_index) == 8,
-    "offset of DrawIndexedIndirect.base_index does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(DrawIndexedIndirect, vertex_offset) == 12,
-    "offset of DrawIndexedIndirect.vertex_offset does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(DrawIndexedIndirect, base_instance) == 16,
-    "offset of DrawIndexedIndirect.base_instance does not match WGSL"
-);
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceBounds {
     pub sphere: glam::Vec4,
     pub min_xyz: glam::Vec4,
@@ -162,10 +129,9 @@ pub mod bind_groups {
     }
     pub struct BindGroup1(wgpu::BindGroup);
     pub struct BindGroupLayout1<'a> {
-        pub draws: wgpu::BufferBinding<'a>,
-        pub edge_draws: wgpu::BufferBinding<'a>,
         pub instance_bounds: wgpu::BufferBinding<'a>,
         pub visibility: wgpu::BufferBinding<'a>,
+        pub new_visibility: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -175,7 +141,7 @@ pub mod bind_groups {
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage {
-                        read_only: false,
+                        read_only: true,
                     },
                     has_dynamic_offset: false,
                     min_binding_size: None,
@@ -196,18 +162,6 @@ pub mod bind_groups {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage {
-                        read_only: true,
-                    },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage {
@@ -233,21 +187,19 @@ pub mod bind_groups {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::Buffer(bindings.draws),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Buffer(bindings.edge_draws),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
                                 resource: wgpu::BindingResource::Buffer(
                                     bindings.instance_bounds,
                                 ),
                             },
                             wgpu::BindGroupEntry {
-                                binding: 3,
+                                binding: 1,
                                 resource: wgpu::BindingResource::Buffer(bindings.visibility),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.new_visibility,
+                                ),
                             },
                         ],
                         label: None,
@@ -272,8 +224,7 @@ pub mod bind_groups {
     }
 }
 pub mod compute {
-    pub const CULLING_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
-    pub const SET_VISIBILITY_MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
+    pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(include_str!("culling.wgsl"));

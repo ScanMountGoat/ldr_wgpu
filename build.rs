@@ -19,6 +19,11 @@ fn main() {
         "blit_depth.wgsl",
         "src/shader/blit_depth.rs",
     );
+    write_shader(
+        "src/shader/visibility.wgsl",
+        "visibility.wgsl",
+        "src/shader/visibility.rs",
+    );
 }
 
 fn write_shader(wgsl_path: &str, include_path: &str, output_path: &str) {

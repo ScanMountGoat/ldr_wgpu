@@ -17,32 +17,20 @@ var<uniform> camera: Camera;
 @group(0) @binding(1)
 var depth_pyramid: texture_2d<f32>;
 
-struct DrawIndexedIndirect {
-    vertex_count: u32,
-    instance_count: u32,
-    base_index: u32,
-    vertex_offset: i32,
-    base_instance: u32,
-}
-
-// TODO: Make these write only?
-@group(1) @binding(0)
-var<storage, read_write> draws: array<DrawIndexedIndirect>;
-
-@group(1) @binding(1)
-var<storage, read_write> edge_draws: array<DrawIndexedIndirect>;
-
 struct InstanceBounds {
     sphere: vec4<f32>,
     min_xyz: vec4<f32>,
     max_xyz: vec4<f32>,
 }
 
-@group(1) @binding(2)
+@group(1) @binding(0)
 var<storage, read> instance_bounds: array<InstanceBounds>;
 
-@group(1) @binding(3)
+@group(1) @binding(1)
 var<storage, read_write> visibility: array<u32>;
+
+@group(1) @binding(2)
+var<storage, read_write> new_visibility: array<u32>;
 
 fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	// Cull objects completely outside the viewing frustum.
@@ -157,49 +145,29 @@ fn is_visible(index: u32) -> bool {
 
 @compute
 @workgroup_size(256)
-fn culling_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Assume all the arrays have the same length.
     let index = global_id.x;
-    if (index >= arrayLength(&draws)) {
+    if (index >= arrayLength(&visibility)) {
         return;
     }
 
     // Set visibility for all objects based on culling.
     // This serves as a visibility estimate for next frame.
+    let previously_visible = visibility[index] != 0u;
     let visible = is_visible(index);
+
     if (visible) {
         visibility[index] = 1u;
     } else {
         visibility[index] = 0u;
     }
 
-    // Only set the instance count to 1 for newly visible objects.
-    // This ensures the culling is still conservative with inaccurate estimates.
-    // TODO: Always assume draws and edge draws have the same length?
-    let previously_visible = draws[index].instance_count != 0u;
+    // Also track objects visible this frame but not last frame
+    // Also drawing these objects makes the culling conservative.
     if (visible && !previously_visible) {
-        draws[index].instance_count = 1u;
-        edge_draws[index].instance_count = 1u;
+        new_visibility[index] = 1u;
     } else {
-        draws[index].instance_count = 0u;
-        edge_draws[index].instance_count = 0u;
-    }
-}
-
-@compute
-@workgroup_size(256)
-fn set_visibility_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    // Assume all the arrays have the same length.
-    let index = global_id.x;
-    if (index >= arrayLength(&draws)) {
-        return;
-    }
-
-    if (visibility[index] != 0u) {
-        draws[index].instance_count = 1u;
-        edge_draws[index].instance_count = 1u;
-    } else {
-        draws[index].instance_count = 0u;
-        edge_draws[index].instance_count = 0u;
+        new_visibility[index] = 0u;
     }
 }

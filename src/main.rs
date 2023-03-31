@@ -66,6 +66,7 @@ struct IndirectSceneData {
     instance_transforms_buffer: wgpu::Buffer,
     instance_bounds_buffer: wgpu::Buffer,
     visibility_buffer: wgpu::Buffer,
+    new_visibility_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     solid: IndirectData,
     edges: IndirectData,
@@ -101,10 +102,13 @@ struct State {
     model_pipeline: wgpu::RenderPipeline,
     model_edges_pipeline: wgpu::RenderPipeline,
 
+    set_visibility_pipeline: wgpu::ComputePipeline,
+    visible_bind_group: shader::visibility::bind_groups::BindGroup0,
+    newly_visible_bind_group: shader::visibility::bind_groups::BindGroup0,
+
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: shader::culling::bind_groups::BindGroup0,
     culling_bind_group1: shader::culling::bind_groups::BindGroup1,
-    set_visibility_pipeline: wgpu::ComputePipeline,
     occlusion_culling_pipeline: wgpu::ComputePipeline,
 
     render_data: IndirectSceneData,
@@ -179,8 +183,8 @@ impl State {
         let model_pipeline = create_pipeline(&device, surface_format, false);
         let model_edges_pipeline = create_pipeline(&device, surface_format, true);
 
-        let set_visibility_pipeline = create_culling_pipeline(&device, "set_visibility_main");
-        let culling_pipeline = create_culling_pipeline(&device, "culling_main");
+        let set_visibility_pipeline = create_visibility_pipeline(&device);
+        let culling_pipeline = create_culling_pipeline(&device);
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
@@ -243,12 +247,29 @@ impl State {
         let culling_bind_group1 = shader::culling::bind_groups::BindGroup1::from_bindings(
             &device,
             shader::culling::bind_groups::BindGroupLayout1 {
-                draws: render_data.solid.indirect_buffer.as_entire_buffer_binding(),
-                edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
                 instance_bounds: render_data
                     .instance_bounds_buffer
                     .as_entire_buffer_binding(),
                 visibility: render_data.visibility_buffer.as_entire_buffer_binding(),
+                new_visibility: render_data.new_visibility_buffer.as_entire_buffer_binding(),
+            },
+        );
+
+        let visible_bind_group = shader::visibility::bind_groups::BindGroup0::from_bindings(
+            &device,
+            shader::visibility::bind_groups::BindGroupLayout0 {
+                draws: render_data.solid.indirect_buffer.as_entire_buffer_binding(),
+                edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
+                visibility: render_data.visibility_buffer.as_entire_buffer_binding(),
+            },
+        );
+
+        let newly_visible_bind_group = shader::visibility::bind_groups::BindGroup0::from_bindings(
+            &device,
+            shader::visibility::bind_groups::BindGroupLayout0 {
+                draws: render_data.solid.indirect_buffer.as_entire_buffer_binding(),
+                edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
+                visibility: render_data.new_visibility_buffer.as_entire_buffer_binding(),
             },
         );
 
@@ -275,6 +296,8 @@ impl State {
             depth_pyramid,
             depth_pyramid_pipeline,
             blit_depth_pipeline,
+            visible_bind_group,
+            newly_visible_bind_group,
             input_state: Default::default(),
         }
     }
@@ -345,23 +368,16 @@ impl State {
         // "Patch-Based Occlusion Culling for Hardware Tessellation"
         // http://www.graphics.stanford.edu/~niessner/papers/2012/2occlusion/niessner2012patch.pdf
 
-        // TODO: look into stream compaction since many objects get culled each frame.
-        // If the scene doesn't change, the second pass will be entirely zeroed out.
-        // A simple naive solution can use a staging buffer to copy from the indirect buffer to the CPU.
-        // This can then be compacted on the CPU and written to the indirect buffer again.
-        // This will be slow but makes it possible to test the performance impact on the model passes.
-
         // Draw everything that was visible last frame.
-        self.set_visibility_pass(&mut encoder);
-        // TODO: Compact the indirect buffer
+        self.set_visibility_pass(&mut encoder, &self.visible_bind_group);
         self.previously_visible_pass(&mut encoder, &output_view);
 
         // Apply culling to set visibility and enable newly visible objects.
         self.depth_pyramid_pass(&mut encoder);
         self.occlusion_culling_pass(&mut encoder);
-        // TODO: Compact the indirect buffer
 
-        // Draw everything that is newly visibile in this frame.
+        // Draw everything that is newly visible in this frame.
+        self.set_visibility_pass(&mut encoder, &self.newly_visible_bind_group);
         self.newly_visible_pass(&mut encoder, &output_view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -451,23 +467,29 @@ impl State {
         draw_indirect(&mut render_pass, &self.render_data, &self.render_data.edges);
     }
 
-    fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn set_visibility_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind_group0: &shader::visibility::bind_groups::BindGroup0,
+    ) {
+        // TODO: apply stream compaction, update the instance counts, and set the draw count
+        // TODO: look into stream compaction since many objects get culled each frame.
+        // If the scene doesn't change, the newly visible buffer may be all zeros.
+        // A simple naive solution can use a staging buffer to copy from the indirect buffer to the CPU.
+        // This can then be compacted on the CPU and written to the indirect buffer again.
+        // This will be slow but makes it possible to test the performance impact on the model passes.
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Set Visibility Pass"),
         });
 
-        // TODO: Don't assume edges and solid draws have the same count?
         compute_pass.set_pipeline(&self.set_visibility_pipeline);
-        shader::culling::bind_groups::set_bind_groups(
+        shader::visibility::bind_groups::set_bind_groups(
             &mut compute_pass,
-            shader::culling::bind_groups::BindGroups {
-                bind_group0: &self.culling_bind_group0,
-                bind_group1: &self.culling_bind_group1,
-            },
+            shader::visibility::bind_groups::BindGroups { bind_group0 },
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = shader::culling::compute::SET_VISIBILITY_MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = shader::visibility::compute::MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -487,7 +509,7 @@ impl State {
         );
 
         // Assume the workgroup is 1D.
-        let [size_x, _, _] = shader::culling::compute::CULLING_MAIN_WORKGROUP_SIZE;
+        let [size_x, _, _] = shader::culling::compute::MAIN_WORKGROUP_SIZE;
         let count = div_round_up(self.render_data.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
@@ -822,13 +844,17 @@ fn load_render_data(
     let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("indirect buffer"),
         contents: bytemuck::cast_slice(&indirect_draws),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+        usage: wgpu::BufferUsages::INDIRECT
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC,
     });
 
     let edge_indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("edge indirect buffer"),
         contents: bytemuck::cast_slice(&edge_indirect_draws),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+        usage: wgpu::BufferUsages::INDIRECT
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC,
     });
 
     let instance_transforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -849,10 +875,16 @@ fn load_render_data(
         contents: bytemuck::cast_slice(&vec![0u32; indirect_draws.len()]),
         usage: wgpu::BufferUsages::STORAGE,
     });
+    let new_visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("new visibility buffer"),
+        contents: bytemuck::cast_slice(&vec![0u32; indirect_draws.len()]),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
 
     IndirectSceneData {
         vertex_buffer,
         visibility_buffer,
+        new_visibility_buffer,
         instance_transforms_buffer,
         instance_bounds_buffer,
         solid: IndirectData {
