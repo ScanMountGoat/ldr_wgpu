@@ -67,14 +67,14 @@ struct IndirectSceneData {
     instance_bounds_buffer: wgpu::Buffer,
     visibility_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
-    // TODO: Group this into a type?
+    solid: IndirectData,
+    edges: IndirectData,
+}
+
+struct IndirectData {
     index_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
     draw_count: u32,
-
-    edge_index_buffer: wgpu::Buffer,
-    edge_indirect_buffer: wgpu::Buffer,
-    edge_draw_count: u32,
 }
 
 struct State {
@@ -205,7 +205,7 @@ impl State {
         let render_data = load_render_data(&device, scene, color_table);
         println!(
             "Load {} parts and {} unique parts: {:?}",
-            render_data.draw_count,
+            render_data.solid.draw_count,
             scene.geometry_cache.len(),
             start.elapsed()
         );
@@ -243,8 +243,8 @@ impl State {
         let culling_bind_group1 = shader::culling::bind_groups::BindGroup1::from_bindings(
             &device,
             shader::culling::bind_groups::BindGroupLayout1 {
-                draws: render_data.indirect_buffer.as_entire_buffer_binding(),
-                edge_draws: render_data.edge_indirect_buffer.as_entire_buffer_binding(),
+                draws: render_data.solid.indirect_buffer.as_entire_buffer_binding(),
+                edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
                 instance_bounds: render_data
                     .instance_bounds_buffer
                     .as_entire_buffer_binding(),
@@ -347,14 +347,19 @@ impl State {
 
         // TODO: look into stream compaction since many objects get culled each frame.
         // If the scene doesn't change, the second pass will be entirely zeroed out.
+        // A simple naive solution can use a staging buffer to copy from the indirect buffer to the CPU.
+        // This can then be compacted on the CPU and written to the indirect buffer again.
+        // This will be slow but makes it possible to test the performance impact on the model passes.
 
         // Draw everything that was visible last frame.
         self.set_visibility_pass(&mut encoder);
+        // TODO: Compact the indirect buffer
         self.previously_visible_pass(&mut encoder, &output_view);
 
         // Apply culling to set visibility and enable newly visible objects.
         self.depth_pyramid_pass(&mut encoder);
         self.occlusion_culling_pass(&mut encoder);
+        // TODO: Compact the indirect buffer
 
         // Draw everything that is newly visibile in this frame.
         self.newly_visible_pass(&mut encoder, &output_view);
@@ -398,10 +403,10 @@ impl State {
 
         // TODO: make this a method?
         render_pass.set_pipeline(&self.model_pipeline);
-        draw_indirect(&mut render_pass, &self.render_data);
+        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.solid);
 
         render_pass.set_pipeline(&self.model_edges_pipeline);
-        draw_edge_indirect(&mut render_pass, &self.render_data);
+        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.edges);
     }
 
     fn newly_visible_pass(
@@ -440,10 +445,10 @@ impl State {
 
         // TODO: make this a method?
         render_pass.set_pipeline(&self.model_pipeline);
-        draw_indirect(&mut render_pass, &self.render_data);
+        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.solid);
 
         render_pass.set_pipeline(&self.model_edges_pipeline);
-        draw_edge_indirect(&mut render_pass, &self.render_data);
+        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.edges);
     }
 
     fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -451,6 +456,7 @@ impl State {
             label: Some("Set Visibility Pass"),
         });
 
+        // TODO: Don't assume edges and solid draws have the same count?
         compute_pass.set_pipeline(&self.set_visibility_pipeline);
         shader::culling::bind_groups::set_bind_groups(
             &mut compute_pass,
@@ -462,7 +468,7 @@ impl State {
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::culling::compute::SET_VISIBILITY_MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.draw_count, size_x);
+        let count = div_round_up(self.render_data.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -482,7 +488,7 @@ impl State {
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::culling::compute::CULLING_MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.draw_count, size_x);
+        let count = div_round_up(self.render_data.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -593,43 +599,19 @@ impl State {
     }
 }
 
-fn draw_indirect<'a>(render_pass: &mut wgpu::RenderPass<'a>, indirect_data: &'a IndirectSceneData) {
-    // Draw the instances of each unique part and color.
-    // This allows reusing most of the rendering state for better performance.
-    render_pass.set_index_buffer(
-        indirect_data.index_buffer.slice(..),
-        wgpu::IndexFormat::Uint32,
-    );
-    render_pass.set_vertex_buffer(0, indirect_data.vertex_buffer.slice(..));
-    render_pass.set_vertex_buffer(1, indirect_data.instance_transforms_buffer.slice(..));
-
-    // Draw each instance with a different transform.
-    render_pass.multi_draw_indexed_indirect(
-        &indirect_data.indirect_buffer,
-        0,
-        indirect_data.draw_count,
-    );
-}
-
-fn draw_edge_indirect<'a>(
+fn draw_indirect<'a>(
     render_pass: &mut wgpu::RenderPass<'a>,
-    indirect_data: &'a IndirectSceneData,
+    scene: &'a IndirectSceneData,
+    data: &'a IndirectData,
 ) {
     // Draw the instances of each unique part and color.
     // This allows reusing most of the rendering state for better performance.
-    render_pass.set_index_buffer(
-        indirect_data.edge_index_buffer.slice(..),
-        wgpu::IndexFormat::Uint32,
-    );
-    render_pass.set_vertex_buffer(0, indirect_data.vertex_buffer.slice(..));
-    render_pass.set_vertex_buffer(1, indirect_data.instance_transforms_buffer.slice(..));
+    render_pass.set_index_buffer(data.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+    render_pass.set_vertex_buffer(0, scene.vertex_buffer.slice(..));
+    render_pass.set_vertex_buffer(1, scene.instance_transforms_buffer.slice(..));
 
     // Draw each instance with a different transform.
-    render_pass.multi_draw_indexed_indirect(
-        &indirect_data.edge_indirect_buffer,
-        0,
-        indirect_data.edge_draw_count,
-    );
+    render_pass.multi_draw_indexed_indirect(&data.indirect_buffer, 0, data.draw_count);
 }
 
 fn create_depth_pyramid(
@@ -870,15 +852,19 @@ fn load_render_data(
 
     IndirectSceneData {
         vertex_buffer,
-        index_buffer,
-        edge_index_buffer,
         visibility_buffer,
         instance_transforms_buffer,
         instance_bounds_buffer,
-        indirect_buffer,
-        edge_indirect_buffer,
-        edge_draw_count: edge_indirect_draws.len() as u32,
-        draw_count: indirect_draws.len() as u32,
+        solid: IndirectData {
+            index_buffer,
+            indirect_buffer,
+            draw_count: indirect_draws.len() as u32,
+        },
+        edges: IndirectData {
+            index_buffer: edge_index_buffer,
+            indirect_buffer: edge_indirect_buffer,
+            draw_count: edge_indirect_draws.len() as u32,
+        },
     }
 }
 
