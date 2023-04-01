@@ -114,7 +114,9 @@ struct State {
     occlusion_culling_pipeline: wgpu::ComputePipeline,
 
     scan_pipeline: wgpu::ComputePipeline,
+    scan_add_pipeline: wgpu::ComputePipeline,
     scan_bind_group0: shader::scan::bind_groups::BindGroup0,
+    scan_add_bind_group0: shader::scan_add::bind_groups::BindGroup0,
 
     render_data: IndirectSceneData,
 
@@ -191,6 +193,7 @@ impl State {
         let _set_visibility_pipeline = create_visibility_pipeline(&device);
         let culling_pipeline = create_culling_pipeline(&device);
         let scan_pipeline = create_scan_pipeline(&device);
+        let scan_add_pipeline = create_scan_add_pipeline(&device);
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
@@ -281,17 +284,17 @@ impl State {
 
         let scan_input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("scan input buffer"),
-            contents: bytemuck::cast_slice(&vec![1u32; 400]),
+            contents: bytemuck::cast_slice(&vec![1u32; 1024]),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let scan_sums_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("scan sums buffer"),
-            contents: bytemuck::cast_slice(&vec![0u32; 400]),
+            contents: bytemuck::cast_slice(&vec![0u32; 1024]),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let scan_output_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("scan output buffer"),
-            contents: bytemuck::cast_slice(&vec![0u32; 400]),
+            contents: bytemuck::cast_slice(&vec![0u32; 1024]),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
@@ -299,6 +302,14 @@ impl State {
             &device,
             shader::scan::bind_groups::BindGroupLayout0 {
                 input: scan_input_buffer.as_entire_buffer_binding(),
+                output: scan_output_buffer.as_entire_buffer_binding(),
+                workgroup_sums: scan_sums_buffer.as_entire_buffer_binding(),
+            },
+        );
+
+        let scan_add_bind_group0 = shader::scan_add::bind_groups::BindGroup0::from_bindings(
+            &device,
+            shader::scan_add::bind_groups::BindGroupLayout0 {
                 output: scan_output_buffer.as_entire_buffer_binding(),
                 workgroup_sums: scan_sums_buffer.as_entire_buffer_binding(),
             },
@@ -330,7 +341,9 @@ impl State {
             _visible_bind_group,
             _newly_visible_bind_group,
             scan_pipeline,
+            scan_add_pipeline,
             scan_bind_group0,
+            scan_add_bind_group0,
             input_state: Default::default(),
         }
     }
@@ -427,6 +440,7 @@ impl State {
         self.depth_pyramid_pass(&mut encoder);
         self.occlusion_culling_pass(&mut encoder);
 
+        // TODO: Use this for compacting the indirect buffers.
         self.scan_pass(&mut encoder);
 
         // Make sure the staging buffer is set up for the next compaction operation.
@@ -585,9 +599,31 @@ impl State {
             label: Some("Scan Pass"),
         });
 
+        // TODO: this should be recursive to handle lengths > 512*512.
+        // TODO: This should be able to scan either visibility buffer.
+        self.scan(&mut compute_pass);
+        self.scan_add(compute_pass);
+    }
+
+    fn scan_add<'a>(&'a self, mut compute_pass: wgpu::ComputePass<'a>) {
+        compute_pass.set_pipeline(&self.scan_add_pipeline);
+        shader::scan_add::bind_groups::set_bind_groups(
+            &mut compute_pass,
+            shader::scan_add::bind_groups::BindGroups {
+                bind_group0: &self.scan_add_bind_group0,
+            },
+        );
+
+        // Assume the workgroup is 1D and processes 2 elements per thread.
+        let [size_x, _, _] = shader::scan_add::compute::MAIN_WORKGROUP_SIZE;
+        let count = div_round_up(1024, size_x * 2);
+        compute_pass.dispatch_workgroups(count, 1, 1);
+    }
+
+    fn scan<'a>(&'a self, compute_pass: &mut wgpu::ComputePass<'a>) {
         compute_pass.set_pipeline(&self.scan_pipeline);
         shader::scan::bind_groups::set_bind_groups(
-            &mut compute_pass,
+            compute_pass,
             shader::scan::bind_groups::BindGroups {
                 bind_group0: &self.scan_bind_group0,
             },
@@ -595,7 +631,7 @@ impl State {
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(400, size_x * 2);
+        let count = div_round_up(1024, size_x * 2);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 

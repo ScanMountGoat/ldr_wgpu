@@ -29,6 +29,11 @@ fn main() {
         "scan.wgsl",
         "src/shader/scan.rs",
     );
+    write_shader(
+        "src/shader/scan_add.wgsl",
+        "scan_add.wgsl",
+        "src/shader/scan_add.rs",
+    );
 }
 
 fn write_shader(wgsl_path: &str, include_path: &str, output_path: &str) {

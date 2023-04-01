@@ -16,10 +16,7 @@ const BLOCK_SIZE = 256u;
 // https://developer.nvidia.com/gpugems/gpugems3/part-vi-gpu-computing/chapter-39-parallel-prefix-sum-scan-cuda
 @compute
 @workgroup_size(256)
-fn main(
-    @builtin(global_invocation_id) global_id: vec3<u32>, 
-    @builtin(workgroup_id) workgroup_id: vec3<u32>, 
-    @builtin(local_invocation_id) local_id: vec3<u32>) {
+fn main(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>) {
     // Each block handles BLOCK_SIZE * 2 elements.
     // Each thread loads two elements.
     let len = arrayLength(&input);
