@@ -506,6 +506,7 @@ impl State {
     }
 
     fn compact_indirect_draws(&mut self) {
+        let start = std::time::Instant::now();
         let buffer_slice = self.render_data.visibility_staging_buffer.slice(..);
 
         let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
@@ -514,11 +515,7 @@ impl State {
         self.device.poll(wgpu::Maintain::Wait);
 
         if let Some(Ok(())) = block_on(receiver.receive()) {
-            let data = self
-                .render_data
-                .visibility_staging_buffer
-                .slice(..)
-                .get_mapped_range();
+            let data = buffer_slice.get_mapped_range();
             let visibility: &[u32] = bytemuck::cast_slice(&data);
 
             compact_draws(&self.queue, &mut self.render_data.solid, visibility);
@@ -527,6 +524,7 @@ impl State {
             drop(data);
             self.render_data.visibility_staging_buffer.unmap();
         }
+        println!("{:?}", start.elapsed());
     }
 
     fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder) {
