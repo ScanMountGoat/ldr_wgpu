@@ -71,6 +71,18 @@ pub fn create_visibility_pipeline(device: &wgpu::Device) -> wgpu::ComputePipelin
     })
 }
 
+pub fn create_scan_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+    let shader = shader::scan::create_shader_module(device);
+    let render_pipeline_layout = shader::scan::create_pipeline_layout(device);
+
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Scan Pipeline"),
+        layout: Some(&render_pipeline_layout),
+        module: &shader,
+        entry_point: "main",
+    })
+}
+
 pub fn create_culling_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
     let shader = shader::culling::create_shader_module(device);
     let render_pipeline_layout = shader::culling::create_pipeline_layout(device);
