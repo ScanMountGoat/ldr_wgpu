@@ -67,7 +67,9 @@ struct IndirectSceneData {
     instance_bounds_buffer: wgpu::Buffer,
     visibility_buffer: wgpu::Buffer,
     new_visibility_buffer: wgpu::Buffer,
+    scanned_new_visibility_buffer: wgpu::Buffer,
     scanned_visibility_buffer: wgpu::Buffer,
+    compacted_count_buffer: wgpu::Buffer,
     compacted_count_staging_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     solid: IndirectData,
@@ -78,13 +80,14 @@ struct IndirectData {
     index_buffer: wgpu::Buffer,
     indirect_buffer: wgpu::Buffer,
     compacted_indirect_buffer: wgpu::Buffer,
-    draws: Vec<DrawIndexedIndirect>,
+    draw_count: u32,
     compacted_draw_count: u32,
 }
 
 struct ScanBindGroups {
-    scan_bind_group: shader::scan::bind_groups::BindGroup0,
-    scan_add_bind_group: shader::scan_add::bind_groups::BindGroup0,
+    scan: shader::scan::bind_groups::BindGroup0,
+    scan_sums: Option<Box<ScanBindGroups>>,
+    add_sums: shader::scan_add::bind_groups::BindGroup0,
 }
 
 struct State {
@@ -125,8 +128,6 @@ struct State {
     scan_add_pipeline: wgpu::ComputePipeline,
     scan_visible: ScanBindGroups,
     scan_newly_visible: ScanBindGroups,
-
-    compacted_count_buffer: wgpu::Buffer,
 
     render_data: IndirectSceneData,
 
@@ -230,7 +231,7 @@ impl State {
         let render_data = load_render_data(&device, scene, color_table);
         println!(
             "Load {} parts and {} unique parts: {:?}",
-            render_data.solid.draws.len(),
+            render_data.solid.draw_count,
             scene.geometry_cache.len(),
             start.elapsed()
         );
@@ -276,12 +277,6 @@ impl State {
             },
         );
 
-        let compacted_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("compacted draw count buffer"),
-            contents: bytemuck::cast_slice(&[0u32]),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        });
-
         let visible_bind_group = shader::visibility::bind_groups::BindGroup0::from_bindings(
             &device,
             shader::visibility::bind_groups::BindGroupLayout0 {
@@ -299,7 +294,9 @@ impl State {
                     .edges
                     .compacted_indirect_buffer
                     .as_entire_buffer_binding(),
-                compacted_draw_count: compacted_count_buffer.as_entire_buffer_binding(),
+                compacted_draw_count: render_data
+                    .compacted_count_buffer
+                    .as_entire_buffer_binding(),
             },
         );
 
@@ -310,7 +307,7 @@ impl State {
                 edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
                 visibility: render_data.new_visibility_buffer.as_entire_buffer_binding(),
                 scanned_visibility: render_data
-                    .scanned_visibility_buffer
+                    .scanned_new_visibility_buffer
                     .as_entire_buffer_binding(),
                 compacted_draws: render_data
                     .solid
@@ -320,62 +317,25 @@ impl State {
                     .edges
                     .compacted_indirect_buffer
                     .as_entire_buffer_binding(),
-                compacted_draw_count: compacted_count_buffer.as_entire_buffer_binding(),
+                compacted_draw_count: render_data
+                    .compacted_count_buffer
+                    .as_entire_buffer_binding(),
             },
         );
 
-        // TODO: Create bind groups for both visible and newly visible
-        let scan_sums_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("scan sums buffer"),
-            contents: bytemuck::cast_slice(&vec![0u32; 1024]),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
         // Create separate inputs for both visible and newly visible passes.
         // Most of the output buffers can be reused.
-        let scan_visible = ScanBindGroups {
-            scan_bind_group: shader::scan::bind_groups::BindGroup0::from_bindings(
-                &device,
-                shader::scan::bind_groups::BindGroupLayout0 {
-                    input: render_data.visibility_buffer.as_entire_buffer_binding(),
-                    output: render_data
-                        .scanned_visibility_buffer
-                        .as_entire_buffer_binding(),
-                    workgroup_sums: scan_sums_buffer.as_entire_buffer_binding(),
-                },
-            ),
-            scan_add_bind_group: shader::scan_add::bind_groups::BindGroup0::from_bindings(
-                &device,
-                shader::scan_add::bind_groups::BindGroupLayout0 {
-                    output: render_data
-                        .scanned_visibility_buffer
-                        .as_entire_buffer_binding(),
-                    workgroup_sums: scan_sums_buffer.as_entire_buffer_binding(),
-                },
-            ),
-        };
+        let scan_visible = create_scan_bind_groups(
+            &device,
+            &render_data.visibility_buffer,
+            &render_data.scanned_visibility_buffer,
+        );
 
-        let scan_newly_visible = ScanBindGroups {
-            scan_bind_group: shader::scan::bind_groups::BindGroup0::from_bindings(
-                &device,
-                shader::scan::bind_groups::BindGroupLayout0 {
-                    input: render_data.new_visibility_buffer.as_entire_buffer_binding(),
-                    output: render_data
-                        .scanned_visibility_buffer
-                        .as_entire_buffer_binding(),
-                    workgroup_sums: scan_sums_buffer.as_entire_buffer_binding(),
-                },
-            ),
-            scan_add_bind_group: shader::scan_add::bind_groups::BindGroup0::from_bindings(
-                &device,
-                shader::scan_add::bind_groups::BindGroupLayout0 {
-                    output: render_data
-                        .scanned_visibility_buffer
-                        .as_entire_buffer_binding(),
-                    workgroup_sums: scan_sums_buffer.as_entire_buffer_binding(),
-                },
-            ),
-        };
+        let scan_newly_visible = create_scan_bind_groups(
+            &device,
+            &render_data.new_visibility_buffer,
+            &render_data.scanned_new_visibility_buffer,
+        );
 
         Self {
             surface,
@@ -406,7 +366,6 @@ impl State {
             scan_add_pipeline,
             scan_visible,
             scan_newly_visible,
-            compacted_count_buffer,
             input_state: Default::default(),
         }
     }
@@ -481,7 +440,7 @@ impl State {
         self.set_visibility_pass(&mut encoder, false);
 
         encoder.copy_buffer_to_buffer(
-            &self.compacted_count_buffer,
+            &self.render_data.compacted_count_buffer,
             0,
             &self.render_data.compacted_count_staging_buffer,
             0,
@@ -507,7 +466,7 @@ impl State {
 
         // Make sure the staging buffer is set up for the next compaction operation.
         encoder.copy_buffer_to_buffer(
-            &self.compacted_count_buffer,
+            &self.render_data.compacted_count_buffer,
             0,
             &self.render_data.compacted_count_staging_buffer,
             0,
@@ -634,7 +593,7 @@ impl State {
             drop(data);
             self.render_data.compacted_count_staging_buffer.unmap();
         }
-        // println!("{:?}", start.elapsed());
+        println!("{:?}", start.elapsed());
     }
 
     fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -653,7 +612,7 @@ impl State {
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::culling::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draws.len() as u32, size_x);
+        let count = div_round_up(self.render_data.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -662,19 +621,26 @@ impl State {
             label: Some("Set Visibility Pass"),
         });
 
-        // TODO: this should be recursive to handle draw counts > 512*512.
         if newly_visible {
-            self.scan(&mut compute_pass, &self.scan_newly_visible.scan_bind_group);
-            self.scan_add(
-                &mut compute_pass,
-                &self.scan_newly_visible.scan_add_bind_group,
-            );
+            self.scan_recursive(&mut compute_pass, &self.scan_newly_visible);
             self.set_visibility(&mut compute_pass, &self.newly_visible_bind_group);
         } else {
-            self.scan(&mut compute_pass, &self.scan_visible.scan_bind_group);
-            self.scan_add(&mut compute_pass, &self.scan_visible.scan_add_bind_group);
+            self.scan_recursive(&mut compute_pass, &self.scan_visible);
             self.set_visibility(&mut compute_pass, &self.visible_bind_group);
         }
+    }
+
+    fn scan_recursive<'a>(
+        &'a self,
+        compute_pass: &mut wgpu::ComputePass<'a>,
+        bind_groups: &'a ScanBindGroups,
+    ) {
+        // Recursively scan to support scanning arrays much larger than a single workgroup.
+        self.scan(compute_pass, &bind_groups.scan);
+        if let Some(scan_sums) = &bind_groups.scan_sums {
+            self.scan_recursive(compute_pass, scan_sums);
+        }
+        self.scan_add(compute_pass, &bind_groups.add_sums);
     }
 
     fn set_visibility<'a>(
@@ -690,7 +656,7 @@ impl State {
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::visibility::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draws.len() as u32, size_x);
+        let count = div_round_up(self.render_data.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -707,7 +673,7 @@ impl State {
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan_add::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draws.len() as u32, size_x * 2);
+        let count = div_round_up(self.render_data.solid.draw_count, size_x * 2);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -724,7 +690,7 @@ impl State {
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draws.len() as u32, size_x * 2);
+        let count = div_round_up(self.render_data.solid.draw_count, size_x * 2);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -835,49 +801,62 @@ impl State {
     }
 }
 
-fn compact_draws(queue: &wgpu::Queue, indirect_data: &mut IndirectData, visibility: &[u32]) {
-    // Partition by visibility to compact the draw list.
-    // Use the original unmodified draws to avoid another GPU copy.
-    // TODO: Replace this with a GPU compaction algorithm to avoid stalls/copies.
-    let compacted_draws: Vec<_> = indirect_data
-        .draws
-        .iter()
-        .zip(visibility)
-        .filter_map(|(d, v)| {
-            if *v != 0 {
-                Some(DrawIndexedIndirect {
-                    instance_count: 1,
-                    ..*d
-                })
-            } else {
-                None
-            }
-        })
-        .chain(
-            indirect_data
-                .draws
-                .iter()
-                .zip(visibility)
-                .filter_map(|(d, v)| {
-                    if *v == 0 {
-                        Some(DrawIndexedIndirect {
-                            instance_count: 0,
-                            ..*d
-                        })
-                    } else {
-                        None
-                    }
-                }),
-        )
-        .collect();
+fn create_scan_bind_groups(
+    device: &wgpu::Device,
+    input: &wgpu::Buffer,
+    output: &wgpu::Buffer,
+) -> ScanBindGroups {
+    // Each workgroup processes 512 elements.
+    // This means we only need N / 512 workgroup sums.
+    let element_count = input.size() as u32 / std::mem::size_of::<u32>() as u32;
+    let elements_per_workgroup = crate::shader::scan::compute::MAIN_WORKGROUP_SIZE[0] * 2;
 
-    // Update the buffer and count to reflect the newly compacted data.
-    queue.write_buffer(
-        &indirect_data.indirect_buffer,
-        0,
-        bytemuck::cast_slice(&compacted_draws),
-    );
-    indirect_data.compacted_draw_count = visibility.iter().filter(|v| **v != 0).count() as u32;
+    let sum_count = div_round_up(element_count, elements_per_workgroup);
+
+    let sums_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("scan workgroup sums buffer"),
+        contents: bytemuck::cast_slice(&vec![0u32; sum_count as usize]),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    // The workgroup sums themselves may need to be scanned.
+    let scanned_sums_buffer = if sum_count > 1 {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("scan workgroup sums buffer"),
+                contents: bytemuck::cast_slice(&vec![0u32; sum_count as usize]),
+                usage: wgpu::BufferUsages::STORAGE,
+            }),
+        )
+    } else {
+        None
+    };
+
+    // Recursively scan the workgroup sums before adding them.
+    ScanBindGroups {
+        scan: shader::scan::bind_groups::BindGroup0::from_bindings(
+            device,
+            shader::scan::bind_groups::BindGroupLayout0 {
+                input: input.as_entire_buffer_binding(),
+                output: output.as_entire_buffer_binding(),
+                workgroup_sums: sums_buffer.as_entire_buffer_binding(),
+            },
+        ),
+        scan_sums: scanned_sums_buffer.as_ref().map(|scanned_sums| {
+            Box::new(create_scan_bind_groups(device, &sums_buffer, &scanned_sums))
+        }),
+        add_sums: shader::scan_add::bind_groups::BindGroup0::from_bindings(
+            device,
+            shader::scan_add::bind_groups::BindGroupLayout0 {
+                output: output.as_entire_buffer_binding(),
+                // Use the recursively scanned sums.
+                workgroup_sums: scanned_sums_buffer
+                    .as_ref()
+                    .unwrap_or(&sums_buffer)
+                    .as_entire_buffer_binding(),
+            },
+        ),
+    }
 }
 
 fn draw_indirect<'a>(
@@ -1143,7 +1122,7 @@ fn load_render_data(
     });
 
     // Start with all objects visible.
-    // This only negatively impacts performance on the first frame.
+    // This should only negatively impact performance on the first frame.
     let visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("visibility buffer"),
         contents: bytemuck::cast_slice(&vec![1u32; indirect_draws.len()]),
@@ -1154,14 +1133,28 @@ fn load_render_data(
         contents: bytemuck::cast_slice(&vec![0u32; indirect_draws.len()]),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
+
+    let compacted_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("compacted draw count buffer"),
+        contents: bytemuck::cast_slice(&[0u32]),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+
     let compacted_count_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("compacted count staging buffer"),
-        size: 4,
+        size: compacted_count_buffer.size(),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     let scanned_visibility_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("scanned visibility buffer"),
+        size: visibility_buffer.size(),
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+
+    let scanned_new_visibility_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("scanned visibility buffer"),
         size: visibility_buffer.size(),
         usage: wgpu::BufferUsages::STORAGE,
@@ -1174,20 +1167,22 @@ fn load_render_data(
         new_visibility_buffer,
         instance_transforms_buffer,
         instance_bounds_buffer,
+        compacted_count_buffer,
         compacted_count_staging_buffer,
         scanned_visibility_buffer,
+        scanned_new_visibility_buffer,
         solid: IndirectData {
             index_buffer,
             indirect_buffer,
+            draw_count: indirect_draws.len() as u32,
             compacted_draw_count: indirect_draws.len() as u32,
-            draws: indirect_draws,
             compacted_indirect_buffer,
         },
         edges: IndirectData {
             index_buffer: edge_index_buffer,
             indirect_buffer: edge_indirect_buffer,
+            draw_count: edge_indirect_draws.len() as u32,
             compacted_draw_count: edge_indirect_draws.len() as u32,
-            draws: edge_indirect_draws,
             compacted_indirect_buffer: compacted_edge_indirect_buffer,
         },
     }
