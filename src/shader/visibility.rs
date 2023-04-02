@@ -38,7 +38,11 @@ pub mod bind_groups {
     pub struct BindGroupLayout0<'a> {
         pub draws: wgpu::BufferBinding<'a>,
         pub edge_draws: wgpu::BufferBinding<'a>,
+        pub compacted_draws: wgpu::BufferBinding<'a>,
+        pub compacted_edge_draws: wgpu::BufferBinding<'a>,
         pub visibility: wgpu::BufferBinding<'a>,
+        pub scanned_visibility: wgpu::BufferBinding<'a>,
+        pub compacted_draw_count: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR0: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -79,6 +83,54 @@ pub mod bind_groups {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: false,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: true,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: true,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: false,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     };
     impl BindGroup0 {
@@ -102,7 +154,31 @@ pub mod bind_groups {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 2,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.compacted_draws,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.compacted_edge_draws,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
                                 resource: wgpu::BindingResource::Buffer(bindings.visibility),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 5,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.scanned_visibility,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 6,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.compacted_draw_count,
+                                ),
                             },
                         ],
                         label: None,

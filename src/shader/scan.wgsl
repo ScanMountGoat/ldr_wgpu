@@ -1,7 +1,6 @@
 @group(0) @binding(0)
-var<storage, read_write> input: array<u32>;
+var<storage, read> input: array<u32>;
 
-// TODO: Write only?
 @group(0) @binding(1)
 var<storage, read_write> output: array<u32>;
 
