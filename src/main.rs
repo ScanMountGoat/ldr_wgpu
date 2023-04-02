@@ -131,6 +131,8 @@ struct State {
 
     render_data: IndirectSceneData,
 
+    supports_indirect_count: bool,
+
     input_state: InputState,
 }
 
@@ -170,16 +172,27 @@ impl State {
             .unwrap();
         println!("{:#?}", adapter.get_info());
 
+        let mut features = wgpu::Features::MULTI_DRAW_INDIRECT
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+            | wgpu::Features::POLYGON_MODE_LINE;
+
+        let supports_indirect_count = adapter
+            .features()
+            .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
+        println!("{:?}", adapter.features());
+
+        if supports_indirect_count {
+            features = features | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+        }
+
         // TODO: Add an optimized code path if MULTI_DRAW_INDIRECT_COUNT is available.
         // This avoids synchronization with the CPU.
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: wgpu::Features::MULTI_DRAW_INDIRECT
-                        | wgpu::Features::INDIRECT_FIRST_INSTANCE
-                        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-                        | wgpu::Features::POLYGON_MODE_LINE,
+                    features,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -366,6 +379,7 @@ impl State {
             scan_add_pipeline,
             scan_visible,
             scan_newly_visible,
+            supports_indirect_count,
             input_state: Default::default(),
         }
     }
@@ -429,8 +443,6 @@ impl State {
         // Use a two pass conservative culling scheme introduced in the following paper:
         // "Patch-Based Occlusion Culling for Hardware Tessellation"
         // http://www.graphics.stanford.edu/~niessner/papers/2012/2occlusion/niessner2012patch.pdf
-
-        // TODO: The synchronization and copies aren't necessary if indirect count is supported.
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -439,22 +451,25 @@ impl State {
 
         self.set_visibility_pass(&mut encoder, false);
 
-        encoder.copy_buffer_to_buffer(
-            &self.render_data.compacted_count_buffer,
-            0,
-            &self.render_data.compacted_count_staging_buffer,
-            0,
-            self.render_data.compacted_count_staging_buffer.size(),
-        );
-        // Submit to make sure the copy finishes.
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.update_compacted_draw_count();
+        // The synchronization and copies aren't necessary if indirect count is supported.
+        if !self.supports_indirect_count {
+            encoder.copy_buffer_to_buffer(
+                &self.render_data.compacted_count_buffer,
+                0,
+                &self.render_data.compacted_count_staging_buffer,
+                0,
+                self.render_data.compacted_count_staging_buffer.size(),
+            );
+            // Submit to make sure the copy finishes.
+            self.queue.submit(std::iter::once(encoder.finish()));
+            self.update_compacted_draw_count();
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder 2"),
-            });
+            encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Encoder 2"),
+                });
+        }
 
         // Draw everything that was visible last frame.
         self.previously_visible_pass(&mut encoder, &output_view);
@@ -464,30 +479,30 @@ impl State {
         self.occlusion_culling_pass(&mut encoder);
         self.set_visibility_pass(&mut encoder, true);
 
-        // Make sure the staging buffer is set up for the next compaction operation.
-        encoder.copy_buffer_to_buffer(
-            &self.render_data.compacted_count_buffer,
-            0,
-            &self.render_data.compacted_count_staging_buffer,
-            0,
-            self.render_data.compacted_count_staging_buffer.size(),
-        );
-        // Submit to make sure the copy completes.
-        self.queue.submit(std::iter::once(encoder.finish()));
-        self.update_compacted_draw_count();
+        if !self.supports_indirect_count {
+            // Make sure the staging buffer is set up for the next compaction operation.
+            encoder.copy_buffer_to_buffer(
+                &self.render_data.compacted_count_buffer,
+                0,
+                &self.render_data.compacted_count_staging_buffer,
+                0,
+                self.render_data.compacted_count_staging_buffer.size(),
+            );
+            // Submit to make sure the copy completes.
+            self.queue.submit(std::iter::once(encoder.finish()));
+            self.update_compacted_draw_count();
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder 3"),
-            });
+            encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Render Encoder 3"),
+                });
+        }
 
         // Draw everything that is newly visible in this frame.
         self.newly_visible_pass(&mut encoder, &output_view);
 
         self.queue.submit(std::iter::once(encoder.finish()));
-
-        // Actually draw the frame.
         output.present();
         Ok(())
     }
@@ -524,10 +539,20 @@ impl State {
 
         // TODO: make this a method?
         render_pass.set_pipeline(&self.model_pipeline);
-        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.solid);
+        draw_indirect(
+            &mut render_pass,
+            &self.render_data,
+            &self.render_data.solid,
+            self.supports_indirect_count,
+        );
 
         render_pass.set_pipeline(&self.model_edges_pipeline);
-        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.edges);
+        draw_indirect(
+            &mut render_pass,
+            &self.render_data,
+            &self.render_data.edges,
+            self.supports_indirect_count,
+        );
     }
 
     fn newly_visible_pass(
@@ -566,15 +591,24 @@ impl State {
 
         // TODO: make this a method?
         render_pass.set_pipeline(&self.model_pipeline);
-        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.solid);
+        draw_indirect(
+            &mut render_pass,
+            &self.render_data,
+            &self.render_data.solid,
+            self.supports_indirect_count,
+        );
 
         render_pass.set_pipeline(&self.model_edges_pipeline);
-        draw_indirect(&mut render_pass, &self.render_data, &self.render_data.edges);
+        draw_indirect(
+            &mut render_pass,
+            &self.render_data,
+            &self.render_data.edges,
+            self.supports_indirect_count,
+        );
     }
 
     fn update_compacted_draw_count(&mut self) {
         // TODO: return a value instead?
-        let start = std::time::Instant::now();
         let buffer_slice = self.render_data.compacted_count_staging_buffer.slice(..);
 
         let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
@@ -593,7 +627,6 @@ impl State {
             drop(data);
             self.render_data.compacted_count_staging_buffer.unmap();
         }
-        println!("{:?}", start.elapsed());
     }
 
     fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -863,6 +896,7 @@ fn draw_indirect<'a>(
     render_pass: &mut wgpu::RenderPass<'a>,
     scene: &'a IndirectSceneData,
     data: &'a IndirectData,
+    supports_indirect_count: bool,
 ) {
     // Draw the instances of each unique part and color.
     // This allows reusing most of the rendering state for better performance.
@@ -871,13 +905,21 @@ fn draw_indirect<'a>(
     render_pass.set_vertex_buffer(1, scene.instance_transforms_buffer.slice(..));
 
     // Draw each instance with a different transform.
-    // TODO: Use the draw indirect count method instead of storing a separate count?
-    // TODO: Update the compacted count by reading data from the GPU.
-    render_pass.multi_draw_indexed_indirect(
-        &data.compacted_indirect_buffer,
-        0,
-        data.compacted_draw_count,
-    );
+    if supports_indirect_count {
+        render_pass.multi_draw_indexed_indirect_count(
+            &data.compacted_indirect_buffer,
+            0,
+            &scene.compacted_count_buffer,
+            0,
+            data.draw_count,
+        );
+    } else {
+        render_pass.multi_draw_indexed_indirect(
+            &data.compacted_indirect_buffer,
+            0,
+            data.compacted_draw_count,
+        );
+    }
 }
 
 fn create_depth_pyramid(
@@ -1137,7 +1179,9 @@ fn load_render_data(
     let compacted_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("compacted draw count buffer"),
         contents: bytemuck::cast_slice(&[0u32]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::INDIRECT,
     });
 
     let compacted_count_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {

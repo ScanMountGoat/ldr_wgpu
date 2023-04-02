@@ -68,5 +68,7 @@ fn main(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(local_invocatio
     }
 
     // Save the total sum for the next steps.
-    workgroup_sums[workgroup_id.x] = output_shared[2u * BLOCK_SIZE - 1u];
+    if (local_id.x == 0u) {
+        workgroup_sums[workgroup_id.x] = output_shared[2u * BLOCK_SIZE - 1u];
+    }
 }
