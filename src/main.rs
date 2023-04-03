@@ -216,10 +216,12 @@ impl State {
         let model_pipeline = create_pipeline(&device, surface_format, false);
         let model_edges_pipeline = create_pipeline(&device, surface_format, true);
 
-        let visibility_pipeline = create_visibility_pipeline(&device);
-        let culling_pipeline = create_culling_pipeline(&device);
-        let scan_pipeline = create_scan_pipeline(&device);
-        let scan_add_pipeline = create_scan_add_pipeline(&device);
+        let visibility_pipeline = shader::visibility::compute::create_main_pipeline(&device);
+        let culling_pipeline = shader::culling::compute::create_main_pipeline(&device);
+        let scan_pipeline = shader::scan::compute::create_main_pipeline(&device);
+        let scan_add_pipeline = shader::scan_add::compute::create_main_pipeline(&device);
+        let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(&device);
+        let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(&device);
 
         let translation = vec3(0.0, -0.5, -20.0);
         let rotation_xyz = Vec3::ZERO;
@@ -265,9 +267,6 @@ impl State {
         });
 
         let (depth_texture, depth_view) = create_depth_texture(&device, size.width, size.height);
-
-        let depth_pyramid_pipeline = create_depth_pyramid_pipeline(&device);
-        let blit_depth_pipeline = create_blit_depth_pipeline(&device);
 
         let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
 

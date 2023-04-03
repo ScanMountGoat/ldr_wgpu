@@ -78,6 +78,19 @@ pub mod bind_groups {
 }
 pub mod compute {
     pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];
+    pub fn create_main_pipeline(device: &wgpu::Device) -> wgpu::ComputePipeline {
+        let module = super::create_shader_module(device);
+        let layout = super::create_pipeline_layout(device);
+        device
+            .create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("Compute Pipeline main"),
+                    layout: Some(&layout),
+                    module: &module,
+                    entry_point: "main",
+                },
+            )
+    }
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(include_str!("scan_add.wgsl"));
