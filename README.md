@@ -38,6 +38,9 @@ ldr_wgpu uses a form of hierarchical-z map occlusion culling presented in the pa
 
 Accurate occlusion culling in this way requires accurate depth information. Rendering the same scene twice defeats the point of culling. This is accomplished by using the previous frame's visibility as an estimate for the current frame's visibility. Previously visible objects are used for the occluder pass to determine what objects are newly visible in this frame and update visibility estimates for the next frame. This avoids the need for separate geometry for occluders or inaccurate depth reprojection from the previous frame. See the source code for details.
 
+### Depth Buffer Precision
+The standard configuration for depth testing uses a floating point depth format and a depth test using less than or less than or equal. This results in most of the precision being concentrated near the near plane. ldr_wgpu uses the common [reversed-z](https://developer.nvidia.com/content/depth-precision-visualized) trick to more evenly distribute the depth precision. The increased precision far away is critical for occlusion culling to work properly on large models. This also allows the far plane to be positioned at infinity, resulting in infinite draw distance with minimal precision issues.
+
 ## Compatibility
 The code is built using WGPU and targets modern GPU hardware for newer versions of Windows, Linux, and MacOS. The renderer takes advantage of modern features not available on older devices and requires DX12, Vulkan, or Metal support. This includes most GPUs and devices manufactured after around the year 2010.
 
