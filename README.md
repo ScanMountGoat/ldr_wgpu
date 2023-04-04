@@ -1,4 +1,6 @@
 # ldr_wgpu
+![image](https://user-images.githubusercontent.com/23301691/229853622-1ec21101-1b3d-4ee3-bc37-593f025fe935.png)
+
 ldr_wgpu is an experimental LDraw renderer targeting modern desktop GPU hardware.
 
 The goal of this project is to research and implement suitable techniques for rendering large LDraw scenes in real time. This project is not designed to match the quality of offline renderers like Blender Cycles. The code is intended to serve as a reference for others wanting to build their own renderers and contains numerous comments and links to blog posts, technical docs, papers, etc. This project may be reworked to be useable as a library for future Rust projects at some point.
