@@ -22,13 +22,13 @@ var<storage, read_write> compacted_edge_draws: array<DrawIndexedIndirect>;
 var<storage, read> visibility: array<u32>;
 
 // Inclusive scan to enable stream compaction.
-@group(0) @binding(5)
+@group(0) @binding(6)
 var<storage, read> scanned_visibility: array<u32>;
 
 // Use a buffer for storing the final compacted count.
 // The multi draw indirect count feature can read this buffer directly.
 // Unsupported devices will need to copy the count to the CPU.
-@group(0) @binding(6)
+@group(0) @binding(7)
 var<storage, read_write> compacted_draw_count: array<u32>;
 
 @compute

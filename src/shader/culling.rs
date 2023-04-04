@@ -132,6 +132,7 @@ pub mod bind_groups {
         pub instance_bounds: wgpu::BufferBinding<'a>,
         pub visibility: wgpu::BufferBinding<'a>,
         pub new_visibility: wgpu::BufferBinding<'a>,
+        pub transparent: wgpu::BufferBinding<'a>,
     }
     const LAYOUT_DESCRIPTOR1: wgpu::BindGroupLayoutDescriptor = wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -172,6 +173,18 @@ pub mod bind_groups {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage {
+                        read_only: true,
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     };
     impl BindGroup1 {
@@ -199,6 +212,12 @@ pub mod bind_groups {
                                 binding: 2,
                                 resource: wgpu::BindingResource::Buffer(
                                     bindings.new_visibility,
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Buffer(
+                                    bindings.transparent,
                                 ),
                             },
                         ],

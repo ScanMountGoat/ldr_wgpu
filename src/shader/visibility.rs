@@ -108,7 +108,7 @@ pub mod bind_groups {
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 5,
+                binding: 6,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage {
@@ -120,7 +120,7 @@ pub mod bind_groups {
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 6,
+                binding: 7,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage {
@@ -169,13 +169,13 @@ pub mod bind_groups {
                                 resource: wgpu::BindingResource::Buffer(bindings.visibility),
                             },
                             wgpu::BindGroupEntry {
-                                binding: 5,
+                                binding: 6,
                                 resource: wgpu::BindingResource::Buffer(
                                     bindings.scanned_visibility,
                                 ),
                             },
                             wgpu::BindGroupEntry {
-                                binding: 6,
+                                binding: 7,
                                 resource: wgpu::BindingResource::Buffer(
                                     bindings.compacted_draw_count,
                                 ),

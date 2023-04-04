@@ -69,6 +69,7 @@ struct IndirectSceneData {
     new_visibility_buffer: wgpu::Buffer,
     scanned_new_visibility_buffer: wgpu::Buffer,
     scanned_visibility_buffer: wgpu::Buffer,
+    transparent_buffer: wgpu::Buffer,
     compacted_count_buffer: wgpu::Buffer,
     compacted_count_staging_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
@@ -286,6 +287,7 @@ impl State {
                     .as_entire_buffer_binding(),
                 visibility: render_data.visibility_buffer.as_entire_buffer_binding(),
                 new_visibility: render_data.new_visibility_buffer.as_entire_buffer_binding(),
+                transparent: render_data.transparent_buffer.as_entire_buffer_binding(),
             },
         );
 
@@ -1045,13 +1047,14 @@ fn load_render_data(
     let mut combined_transforms = Vec::new();
     let mut indirect_draws = Vec::new();
     let mut instance_bounds = Vec::new();
+    let mut is_part_transparent = Vec::new();
 
     let mut combined_edge_indices = Vec::new();
     let mut edge_indirect_draws = Vec::new();
 
-    // TODO: How to ensure transparent objects only appear in the newly visible pass?
-    // Sort by color so that transparent draws happen last.
+    // Sort so that transparent draws happen last for proper blending.
     // Opaque objects evaluate to false and appear first when sorted.
+    // This is simpler than drawing separate opaque and transparent passes.
     let mut alpha_sorted: Vec<_> = scene.geometry_world_transforms.iter().collect();
     alpha_sorted.sort_by_key(|((_, color), _)| is_transparent(color_table, color));
 
@@ -1072,6 +1075,11 @@ fn load_render_data(
             *color,
             color_table,
         );
+
+        let is_transparent = color_table
+            .get(color)
+            .map(|c| c.rgba_linear[3] < 1.0)
+            .unwrap_or_default();
 
         // Each draw specifies the part mesh using an offset and count.
         // The base instance steps through the transforms buffer.
@@ -1099,6 +1107,8 @@ fn load_render_data(
             let bounds = calculate_instance_bounds(geometry, transform);
             instance_bounds.push(bounds);
             combined_transforms.push(*transform);
+
+            is_part_transparent.push(is_transparent as u32);
         }
     }
 
@@ -1175,6 +1185,13 @@ fn load_render_data(
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     });
 
+    // Used to prevent transparent objects occluding other objects.
+    let transparent_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("transparent buffer"),
+        contents: bytemuck::cast_slice(&is_part_transparent),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
     let compacted_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("compacted draw count buffer"),
         contents: bytemuck::cast_slice(&[0u32]),
@@ -1214,6 +1231,7 @@ fn load_render_data(
         compacted_count_staging_buffer,
         scanned_visibility_buffer,
         scanned_new_visibility_buffer,
+        transparent_buffer,
         solid: IndirectData {
             index_buffer,
             indirect_buffer,

@@ -32,6 +32,9 @@ var<storage, read_write> visibility: array<u32>;
 @group(1) @binding(2)
 var<storage, read_write> new_visibility: array<u32>;
 
+@group(1) @binding(3)
+var<storage, read> transparent: array<u32>;
+
 fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	// Cull objects completely outside the viewing frustum.
 	if (center.z * camera.frustum.y - abs(center.x) * camera.frustum.x < -radius) {
@@ -156,8 +159,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // This serves as a visibility estimate for next frame.
     let previously_visible = visibility[index] != 0u;
     let visible = is_visible(index);
-
-    if (visible) {
+    // Transparent objects should never be in the previously visible pass.
+    // This prevents transparent objects occluding other objects.
+    let is_transparent = transparent[index] != 0u;
+    if (visible && !is_transparent) {
         visibility[index] = 1u;
     } else {
         visibility[index] = 0u;
