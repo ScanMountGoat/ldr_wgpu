@@ -1436,8 +1436,9 @@ fn main() {
     let ldraw_path = &args[1];
     let path = &args[2];
 
-    // Weld vertices to take advantage of vertex caching on the GPU.
+    // Weld vertices to take advantage of vertex caching/batching on the GPU.
     // https://www.khronos.org/opengl/wiki/Post_Transform_Cache
+    // https://arbook.icg.tugraz.at/schmalstieg/Schmalstieg_351.pdf
     // TODO: Is it worth applying a more optimal vertex ordering?
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
