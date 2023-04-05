@@ -47,7 +47,7 @@ The standard configuration for depth testing uses a floating point depth format 
 The code is built using WGPU and targets modern GPU hardware for newer versions of Windows, Linux, and MacOS. The renderer takes advantage of modern features not available on older devices and requires DX12, Vulkan, or Metal support. This includes most GPUs and devices manufactured after around the year 2010.
 
 ## Building
-With a newer version of the Rust toolchain installed, run cargo build --release. Don't forget the --release since debug builds in Rust will run slowly. Run the program as `cargo run --release <ldraw library path> <ldraw file path>`.
+With a newer version of the [Rust toolchain](https://www.rust-lang.org/tools/install) installed, run `cargo build --release` from the main repository directory. Don't forget the --release since debug builds in Rust will run slowly. The executable will be located in `target/release`. Run the program as `cargo run --release <ldraw library path> <ldraw file path>` or `ldr_wgpu <ldraw library path> <ldraw file path>`.
 
 ## Copyrights
 LDraw™ is a trademark owned and licensed by the Jessiman Estate, which does not sponsor, endorse, or authorize this project.
