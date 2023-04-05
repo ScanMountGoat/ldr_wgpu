@@ -16,6 +16,10 @@ use crate::pipeline::*;
 mod pipeline;
 mod shader;
 
+const MSAA_SAMPLES: u32 = 4;
+const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
 // The far plane can be infinity since we use reversed-z.
 const Z_NEAR: f32 = 0.1;
 const Z_FAR: f32 = f32::INFINITY;
@@ -23,7 +27,7 @@ const Z_FAR: f32 = f32::INFINITY;
 fn depth_stencil_reversed() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         // Reversed-z
-        format: wgpu::TextureFormat::Depth32Float,
+        format: DEPTH_FORMAT,
         depth_write_enabled: true,
         depth_compare: wgpu::CompareFunction::GreaterEqual,
         stencil: Default::default(),
@@ -102,6 +106,7 @@ struct State {
     rotation_xyz: Vec3,
     camera_buffer: wgpu::Buffer,
 
+    output_view_msaa: wgpu::TextureView,
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
 
@@ -202,10 +207,9 @@ impl State {
             .unwrap();
 
         let size = window.inner_size();
-        let surface_format = wgpu::TextureFormat::Bgra8UnormSrgb;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
+            format: COLOR_FORMAT,
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
@@ -214,8 +218,8 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let model_pipeline = create_pipeline(&device, surface_format, false);
-        let model_edges_pipeline = create_pipeline(&device, surface_format, true);
+        let model_pipeline = create_pipeline(&device, COLOR_FORMAT, false);
+        let model_edges_pipeline = create_pipeline(&device, COLOR_FORMAT, true);
 
         let visibility_pipeline = shader::visibility::compute::create_main_pipeline(&device);
         let culling_pipeline = shader::culling::compute::create_main_pipeline(&device);
@@ -351,6 +355,8 @@ impl State {
             &render_data.scanned_new_visibility_buffer,
         );
 
+        let output_view_msaa = create_output_msaa_view(&device, size.width, size.height);
+
         Self {
             surface,
             device,
@@ -370,6 +376,7 @@ impl State {
             camera_buffer,
             depth_texture,
             depth_view,
+            output_view_msaa,
             camera_culling_buffer,
             depth_pyramid,
             depth_pyramid_pipeline,
@@ -423,6 +430,9 @@ impl State {
             self.depth_view = depth_view;
 
             self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
+
+            self.output_view_msaa =
+                create_output_msaa_view(&self.device, new_size.width, new_size.height);
 
             // The textures were updated, so use views pointing to the new textures.
             self.culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
@@ -513,12 +523,11 @@ impl State {
         encoder: &mut wgpu::CommandEncoder,
         output_view: &wgpu::TextureView,
     ) {
-        // TODO: Multisampling?
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Previously Visible Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: output_view,
-                resolve_target: None,
+                view: &self.output_view_msaa,
+                resolve_target: Some(&output_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: true,
@@ -561,13 +570,12 @@ impl State {
         encoder: &mut wgpu::CommandEncoder,
         output_view: &wgpu::TextureView,
     ) {
-        // TODO: Multisampling?
         // Load the data from the first model pass.
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Newly Visible Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: output_view,
-                resolve_target: None,
+                view: &self.output_view_msaa,
+                resolve_target: Some(&output_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: true,
@@ -976,6 +984,25 @@ const fn div_round_up(x: u32, d: u32) -> u32 {
     (x + d - 1) / d
 }
 
+fn create_output_msaa_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("output msaa texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: MSAA_SAMPLES,
+        dimension: wgpu::TextureDimension::D2,
+        format: COLOR_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+
+    texture.create_view(&Default::default())
+}
+
 fn create_depth_texture(
     device: &wgpu::Device,
     width: u32,
@@ -989,9 +1016,9 @@ fn create_depth_texture(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: MSAA_SAMPLES,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
+        format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

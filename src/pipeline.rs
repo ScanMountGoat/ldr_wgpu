@@ -1,4 +1,4 @@
-use crate::{depth_stencil_reversed, shader};
+use crate::{depth_stencil_reversed, shader, MSAA_SAMPLES};
 
 pub fn create_pipeline(
     device: &wgpu::Device,
@@ -54,7 +54,10 @@ pub fn create_pipeline(
             }
         },
         depth_stencil: Some(depth_stencil_reversed()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: MSAA_SAMPLES,
+            ..Default::default()
+        },
         multiview: None,
     })
 }
