@@ -2,7 +2,7 @@ use std::{collections::HashMap, num::NonZeroU32};
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
-use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
+use ldr_tools::{FaceColor, GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -184,7 +184,7 @@ impl State {
         println!("{:?}", adapter.features());
 
         if supports_indirect_count {
-            features = features | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+            features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
         }
 
         // TODO: Add an optimized code path if MULTI_DRAW_INDIRECT_COUNT is available.
@@ -877,7 +877,7 @@ fn create_scan_bind_groups(
             },
         ),
         scan_sums: scanned_sums_buffer.as_ref().map(|scanned_sums| {
-            Box::new(create_scan_bind_groups(device, &sums_buffer, &scanned_sums))
+            Box::new(create_scan_bind_groups(device, &sums_buffer, scanned_sums))
         }),
         add_sums: shader::scan_add::bind_groups::BindGroup0::from_bindings(
             device,
@@ -1308,6 +1308,7 @@ fn append_geometry(
     // TODO: handle the case where the face color list is empty?
     match geometry.face_colors.as_slice() {
         [face_color] => {
+            // TODO: Is it worth handling this case separately for performance?
             // Each face and also vertex has the same color.
             // The welded vertex indices can be used as is.
             let color = rgba_color(face_color, color_code, color_table);
@@ -1333,26 +1334,27 @@ fn append_geometry(
             );
         }
         face_colors => {
-            let mut old_to_new_index = vec![0; geometry.vertex_indices.len()];
+            let mut index_by_face_vertex = HashMap::new();
 
-            // Assume faces are already triangulated.
-            // Make each vertex unique to convert per face to vertex coloring.
-            // This means every 3 vertices defines a new face.
             for (i, vertex_index) in geometry.vertex_indices.iter().enumerate() {
+                // Assume faces are already triangulated.
+                // This means every 3 indices defines a new face.
                 let face_color = face_colors.get(i / 3).unwrap_or(&face_colors[0]);
-                let color = rgba_color(face_color, color_code, color_table);
-
-                let new_vertex = shader::model::VertexInput {
-                    position: geometry.vertices[*vertex_index as usize],
-                    color,
-                };
-                vertices.push(new_vertex);
-                vertex_indices.push(i as u32);
-                old_to_new_index[*vertex_index as usize] = i as u32;
+                let new_index = insert_vertex(
+                    face_color,
+                    color_code,
+                    color_table,
+                    vertex_index,
+                    &mut index_by_face_vertex,
+                    geometry,
+                    vertices,
+                );
+                vertex_indices.push(new_index);
             }
 
             // The vertices have been reindexed, so use the mapping from earlier.
             // This ensures the sharp edge indices reference the correct vertices.
+            // TODO: This color specific indexing probably won't work for normals.
             edge_indices.extend(
                 geometry
                     .edges
@@ -1360,13 +1362,71 @@ fn append_geometry(
                     .zip(geometry.is_edge_sharp.iter())
                     .filter(|(_, sharp)| **sharp)
                     .flat_map(|([v0, v1], _)| {
-                        [
-                            old_to_new_index[*v0 as usize],
-                            old_to_new_index[*v1 as usize],
-                        ]
+                        // Assume all black edges for now.
+                        let i0 = insert_vertex(
+                            &FaceColor {
+                                color: 0,
+                                is_grainy_slope: false,
+                            },
+                            color_code,
+                            color_table,
+                            v0,
+                            &mut index_by_face_vertex,
+                            geometry,
+                            vertices,
+                        );
+                        let i1 = insert_vertex(
+                            &FaceColor {
+                                color: 0,
+                                is_grainy_slope: false,
+                            },
+                            color_code,
+                            color_table,
+                            v1,
+                            &mut index_by_face_vertex,
+                            geometry,
+                            vertices,
+                        );
+
+                        [i0, i1]
                     }),
             );
         }
+    }
+}
+
+// TODO: Simplify this and move to ldr_tools with tests?
+fn insert_vertex(
+    face_color: &ldr_tools::FaceColor,
+    color_code: u32,
+    color_table: &HashMap<u32, LDrawColor>,
+    vertex_index: &u32,
+    index_by_face_vertex: &mut HashMap<(u32, u32), u32>,
+    geometry: &ldr_tools::LDrawGeometry,
+    vertices: &mut Vec<shader::model::VertexInput>,
+) -> u32 {
+    let color = rgba_color(face_color, color_code, color_table);
+
+    // Store separate indices for position and color.
+    // TODO: Create a struct for this?
+    // TODO: always ignore grainy slope information?
+    let face_vertex_key = (*vertex_index, face_color.color);
+
+    // A vertex is unique if its position and color are unique.
+    // This allows attributes like color to be indexed by face.
+    // Only the necessary vertices will be duplicated when reindexing.
+    if let Some(cached_index) = index_by_face_vertex.get(&face_vertex_key) {
+        *cached_index
+    } else {
+        let new_vertex = shader::model::VertexInput {
+            position: geometry.vertices[*vertex_index as usize],
+            color,
+        };
+        let new_index = index_by_face_vertex.len() as u32;
+        index_by_face_vertex.insert(face_vertex_key, new_index);
+
+        vertices.push(new_vertex);
+        new_index
     }
 }
 
