@@ -8,18 +8,20 @@ var<uniform> camera: Camera;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: u32,
+    @location(2) normal: vec4<f32>
 }
 
 struct InstanceInput {
-    @location(2) model_matrix_0: vec4<f32>,
-    @location(3) model_matrix_1: vec4<f32>,
-    @location(4) model_matrix_2: vec4<f32>,
-    @location(5) model_matrix_3: vec4<f32>,
+    @location(3) model_matrix_0: vec4<f32>,
+    @location(4) model_matrix_1: vec4<f32>,
+    @location(5) model_matrix_2: vec4<f32>,
+    @location(6) model_matrix_3: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) normal: vec3<f32>
 }
 
 fn unpack_color(color: u32) -> vec4<f32> {
@@ -45,13 +47,18 @@ fn vs_main(
     var out: VertexOutput;
     out.clip_position = camera.view_projection * model_matrix * vec4<f32>(model.position.xyz, 1.0);
     out.color = unpack_color(model.color);
+    // TODO: is this always correct?
+    out.normal = (model_matrix * vec4(model.normal.xyz, 0.0)).xyz;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Premultiplied alpha.
-    return vec4(in.color.rgb * in.color.a, in.color.a);
+    // TODO: Calculate view vector.
+    let lighting = dot(normalize(in.normal.xyz), normalize(vec3(-1.0))) * 0.5 + 0.5;
+    var color = in.color.rgb * lighting;
+    return vec4(color * in.color.a, in.color.a);
 }
 
 // TODO: Is it better to use colors from a separate vertex buffer?

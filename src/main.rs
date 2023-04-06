@@ -1,8 +1,11 @@
-use std::{collections::HashMap, num::NonZeroU32};
+use std::{
+    collections::{BTreeSet, HashMap},
+    num::NonZeroU32,
+};
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
-use ldr_tools::{FaceColor, GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
+use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -527,7 +530,7 @@ impl State {
             label: Some("Previously Visible Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.output_view_msaa,
-                resolve_target: Some(&output_view),
+                resolve_target: Some(output_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: true,
@@ -575,7 +578,7 @@ impl State {
             label: Some("Newly Visible Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.output_view_msaa,
-                resolve_target: Some(&output_view),
+                resolve_target: Some(output_view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: true,
@@ -1085,6 +1088,7 @@ fn load_render_data(
     let mut alpha_sorted: Vec<_> = scene.geometry_world_transforms.iter().collect();
     alpha_sorted.sort_by_key(|((_, color), _)| is_transparent(color_table, color));
 
+    // TODO: perform these conversions in parallel?
     for ((name, color), transforms) in alpha_sorted {
         // Create separate vertex data if a part has multiple colors.
         // This is necessary since we store face colors per vertex.
@@ -1319,12 +1323,40 @@ fn calculate_instance_bounds(
     }
 }
 
+#[derive(Hash, PartialEq, Eq)]
+struct VertexKey {
+    position_index: u32,
+    color: u32,
+    // Normals are determined by the set of adjacent faces.
+    // This helps define smoothing groups in the mesh.
+    adjacent_faces: BTreeSet<usize>,
+}
+
+#[derive(Default)]
+struct VertexCache {
+    index_by_face_vertex: HashMap<VertexKey, u32>,
+}
+
+impl VertexCache {
+    fn get(&self, key: &VertexKey) -> Option<u32> {
+        self.index_by_face_vertex.get(key).copied()
+    }
+
+    fn insert(&mut self, k: VertexKey, v: u32) {
+        self.index_by_face_vertex.insert(k, v);
+    }
+
+    fn len(&self) -> usize {
+        self.index_by_face_vertex.len()
+    }
+}
+
 fn append_geometry(
     vertices: &mut Vec<shader::model::VertexInput>,
     vertex_indices: &mut Vec<u32>,
     edge_indices: &mut Vec<u32>,
     geometry: &ldr_tools::LDrawGeometry,
-    color_code: u32,
+    current_color: u32,
     color_table: &HashMap<u32, LDrawColor>,
 ) {
     // TODO: Edge colors?
@@ -1333,140 +1365,159 @@ fn append_geometry(
     // TODO: missing color codes?
     // TODO: publicly expose color handling logic in ldr_tools.
     // TODO: handle the case where the face color list is empty?
-    match geometry.face_colors.as_slice() {
-        [face_color] => {
-            // TODO: Is it worth handling this case separately for performance?
-            // Each face and also vertex has the same color.
-            // The welded vertex indices can be used as is.
-            let color = rgba_color(face_color, color_code, color_table);
-            vertices.extend(
-                geometry
-                    .vertices
-                    .iter()
-                    .map(|v| shader::model::VertexInput {
-                        position: *v,
-                        color,
-                    }),
-            );
-            vertex_indices.extend_from_slice(&geometry.vertex_indices);
 
-            // Sharp edges define the outlines rendered in instructions or editing applications.
-            edge_indices.extend(
-                geometry
-                    .edges
-                    .iter()
-                    .zip(geometry.is_edge_sharp.iter())
-                    .filter(|(_, sharp)| **sharp)
-                    .flat_map(|(e, _)| *e),
-            );
-        }
-        face_colors => {
-            let mut index_by_face_vertex = HashMap::new();
+    // TODO: move this to ldr_tools.
+    // TODO: Smooth normals based on hard edges and face angle threshold.
+    let face_normals: Vec<_> = geometry
+        .vertex_indices
+        .chunks_exact(3)
+        .map(|face| {
+            let v1 = geometry.vertices[face[0] as usize];
+            let v2 = geometry.vertices[face[1] as usize];
+            let v3 = geometry.vertices[face[2] as usize];
 
-            for (i, vertex_index) in geometry.vertex_indices.iter().enumerate() {
-                // Assume faces are already triangulated.
-                // This means every 3 indices defines a new face.
-                let face_color = face_colors.get(i / 3).unwrap_or(&face_colors[0]);
-                let new_index = insert_vertex(
-                    face_color,
-                    color_code,
-                    color_table,
-                    vertex_index,
-                    &mut index_by_face_vertex,
-                    geometry,
+            let u = v2 - v1;
+            let v = v3 - v1;
+            u.cross(v)
+        })
+        .collect();
+
+    // Assume the position indices are fully welded.
+    // This makes it easy to calculate the indices of adjacent faces for each vertex.
+    let mut vertex_adjacent_faces = vec![Vec::new(); geometry.vertices.len()];
+    for (i, face) in geometry.vertex_indices.chunks_exact(3).enumerate() {
+        vertex_adjacent_faces[face[0] as usize].push(i);
+        vertex_adjacent_faces[face[1] as usize].push(i);
+        vertex_adjacent_faces[face[2] as usize].push(i);
+    }
+
+    let mut vertex_cache = VertexCache::default();
+
+    for (i, vertex_index) in geometry.vertex_indices.iter().enumerate() {
+        // Assume faces are already triangulated.
+        // This means every 3 indices defines a new face.
+        let face_index = i / 3;
+        let face_color = geometry
+            .face_colors
+            .get(face_index)
+            .unwrap_or(&geometry.face_colors[0]);
+
+        let vertex_position = geometry.vertices[*vertex_index as usize];
+
+        // Each normal is uniquely determined by the set of filtered adjacent faces
+        // TODO: Also check hard edges.
+        // TODO: Optimize this?
+        // TODO: Add to geometry_tools?
+        let face_normal = face_normals[face_index];
+        let adjacent_faces: BTreeSet<_> = vertex_adjacent_faces[*vertex_index as usize]
+            .iter()
+            .copied()
+            .filter(|f| face_normals[*f].angle_between(face_normal).abs() < 89f32.to_radians())
+            .collect();
+
+        // Smooth normals are the average of the adjacent face normals.
+        // TODO: Weight by face area?
+        let vertex_normal = adjacent_faces
+            .iter()
+            .map(|f| face_normals[*f])
+            .sum::<Vec3>()
+            .normalize();
+
+        // Store separate indices for position and color.
+        // TODO: Create a struct for this?
+        // TODO: always ignore grainy slope information?
+        // TODO: Pass this as a parameter?
+        let face_vertex_key = VertexKey {
+            position_index: *vertex_index,
+            adjacent_faces,
+            color: face_color.color,
+        };
+
+        let vertex_color = rgba_color(face_vertex_key.color, current_color, color_table);
+
+        let new_index = insert_vertex(
+            face_vertex_key,
+            vertex_position,
+            vertex_normal,
+            vertex_color,
+            &mut vertex_cache,
+            vertices,
+        );
+        vertex_indices.push(new_index);
+    }
+
+    // The vertices have been reindexed, so use the mapping from earlier.
+    // This ensures the sharp edge indices reference the correct vertices.
+    // TODO: This color specific indexing probably won't work for normals.
+    // TODO: Just create a separate vertex buffer without normals.
+    edge_indices.extend(
+        geometry
+            .edges
+            .iter()
+            .zip(geometry.is_edge_sharp.iter())
+            .filter(|(_, sharp)| **sharp)
+            .flat_map(|([v0, v1], _)| {
+                // Assume all black edges for now.
+                let i0 = insert_vertex(
+                    VertexKey {
+                        position_index: *v0,
+                        adjacent_faces: BTreeSet::new(),
+                        color: 0,
+                    },
+                    geometry.vertices[*v0 as usize],
+                    Vec3::ZERO,
+                    0xFF000000,
+                    &mut vertex_cache,
                     vertices,
                 );
-                vertex_indices.push(new_index);
-            }
+                let i1 = insert_vertex(
+                    VertexKey {
+                        position_index: *v1,
+                        adjacent_faces: BTreeSet::new(),
+                        color: 0,
+                    },
+                    geometry.vertices[*v1 as usize],
+                    Vec3::ZERO,
+                    0xFF000000,
+                    &mut vertex_cache,
+                    vertices,
+                );
 
-            // The vertices have been reindexed, so use the mapping from earlier.
-            // This ensures the sharp edge indices reference the correct vertices.
-            // TODO: This color specific indexing probably won't work for normals.
-            edge_indices.extend(
-                geometry
-                    .edges
-                    .iter()
-                    .zip(geometry.is_edge_sharp.iter())
-                    .filter(|(_, sharp)| **sharp)
-                    .flat_map(|([v0, v1], _)| {
-                        // Assume all black edges for now.
-                        let i0 = insert_vertex(
-                            &FaceColor {
-                                color: 0,
-                                is_grainy_slope: false,
-                            },
-                            color_code,
-                            color_table,
-                            v0,
-                            &mut index_by_face_vertex,
-                            geometry,
-                            vertices,
-                        );
-                        let i1 = insert_vertex(
-                            &FaceColor {
-                                color: 0,
-                                is_grainy_slope: false,
-                            },
-                            color_code,
-                            color_table,
-                            v1,
-                            &mut index_by_face_vertex,
-                            geometry,
-                            vertices,
-                        );
-
-                        [i0, i1]
-                    }),
-            );
-        }
-    }
+                [i0, i1]
+            }),
+    );
 }
 
 // TODO: Simplify this and move to ldr_tools with tests?
 fn insert_vertex(
-    face_color: &ldr_tools::FaceColor,
-    color_code: u32,
-    color_table: &HashMap<u32, LDrawColor>,
-    vertex_index: &u32,
-    index_by_face_vertex: &mut HashMap<(u32, u32), u32>,
-    geometry: &ldr_tools::LDrawGeometry,
+    face_vertex_key: VertexKey,
+    vertex_position: glam::Vec3,
+    vertex_normal: glam::Vec3,
+    vertex_color: u32,
+    vertex_cache: &mut VertexCache,
     vertices: &mut Vec<shader::model::VertexInput>,
 ) -> u32 {
-    let color = rgba_color(face_color, color_code, color_table);
-
-    // Store separate indices for position and color.
-    // TODO: Create a struct for this?
-    // TODO: always ignore grainy slope information?
-    let face_vertex_key = (*vertex_index, face_color.color);
-
     // A vertex is unique if its position and color are unique.
     // This allows attributes like color to be indexed by face.
     // Only the necessary vertices will be duplicated when reindexing.
-    if let Some(cached_index) = index_by_face_vertex.get(&face_vertex_key) {
-        *cached_index
+    if let Some(cached_index) = vertex_cache.get(&face_vertex_key) {
+        cached_index
     } else {
         let new_vertex = shader::model::VertexInput {
-            position: geometry.vertices[*vertex_index as usize],
-            color,
+            position: vertex_position,
+            normal: vertex_normal.extend(0.0),
+            color: vertex_color,
         };
-        let new_index = index_by_face_vertex.len() as u32;
-        index_by_face_vertex.insert(face_vertex_key, new_index);
+        let new_index = vertex_cache.len() as u32;
+        vertex_cache.insert(face_vertex_key, new_index);
 
         vertices.push(new_vertex);
         new_index
     }
 }
 
-fn rgba_color(
-    face_color: &ldr_tools::FaceColor,
-    color_code: u32,
-    color_table: &HashMap<u32, LDrawColor>,
-) -> u32 {
-    let replaced_color = if face_color.color == 16 {
-        color_code
-    } else {
-        face_color.color
-    };
+fn rgba_color(color: u32, current_color: u32, color_table: &HashMap<u32, LDrawColor>) -> u32 {
+    let replaced_color = if color == 16 { current_color } else { color };
 
     color_table
         .get(&replaced_color)

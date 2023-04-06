@@ -17,9 +17,10 @@ const _: () = assert!(
 pub struct VertexInput {
     pub position: glam::Vec3,
     pub color: u32,
+    pub normal: glam::Vec4,
 }
 const _: () = assert!(
-    std::mem::size_of:: < VertexInput > () == 16,
+    std::mem::size_of:: < VertexInput > () == 32,
     "size of VertexInput does not match WGSL"
 );
 const _: () = assert!(
@@ -29,6 +30,10 @@ const _: () = assert!(
 const _: () = assert!(
     memoffset::offset_of!(VertexInput, color) == 12,
     "offset of VertexInput.color does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(VertexInput, normal) == 16,
+    "offset of VertexInput.normal does not match WGSL"
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -115,7 +120,7 @@ pub mod bind_groups {
 }
 pub mod vertex {
     impl super::VertexInput {
-        pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+        pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x3,
                 offset: memoffset::offset_of!(super::VertexInput, position) as u64,
@@ -125,6 +130,11 @@ pub mod vertex {
                 format: wgpu::VertexFormat::Uint32,
                 offset: memoffset::offset_of!(super::VertexInput, color) as u64,
                 shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: memoffset::offset_of!(super::VertexInput, normal) as u64,
+                shader_location: 2,
             },
         ];
         pub fn vertex_buffer_layout(
@@ -143,25 +153,25 @@ pub mod vertex {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: memoffset::offset_of!(super::InstanceInput, model_matrix_0)
                     as u64,
-                shader_location: 2,
+                shader_location: 3,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: memoffset::offset_of!(super::InstanceInput, model_matrix_1)
                     as u64,
-                shader_location: 3,
+                shader_location: 4,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: memoffset::offset_of!(super::InstanceInput, model_matrix_2)
                     as u64,
-                shader_location: 4,
+                shader_location: 5,
             },
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: memoffset::offset_of!(super::InstanceInput, model_matrix_3)
                     as u64,
-                shader_location: 5,
+                shader_location: 6,
             },
         ];
         pub fn vertex_buffer_layout(
