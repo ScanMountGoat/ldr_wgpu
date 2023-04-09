@@ -6,6 +6,7 @@ use std::{
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
 use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
+use normal::triangle_face_vertex_normals;
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -16,6 +17,7 @@ use winit::{
 
 use crate::pipeline::*;
 
+mod normal;
 mod pipeline;
 mod shader;
 
@@ -1366,30 +1368,8 @@ fn append_geometry(
     // TODO: publicly expose color handling logic in ldr_tools.
     // TODO: handle the case where the face color list is empty?
 
-    // TODO: move this to ldr_tools.
-    // TODO: Smooth normals based on hard edges and face angle threshold.
-    let face_normals: Vec<_> = geometry
-        .vertex_indices
-        .chunks_exact(3)
-        .map(|face| {
-            let v1 = geometry.vertices[face[0] as usize];
-            let v2 = geometry.vertices[face[1] as usize];
-            let v3 = geometry.vertices[face[2] as usize];
-
-            let u = v2 - v1;
-            let v = v3 - v1;
-            u.cross(v)
-        })
-        .collect();
-
-    // Assume the position indices are fully welded.
-    // This makes it easy to calculate the indices of adjacent faces for each vertex.
-    let mut vertex_adjacent_faces = vec![Vec::new(); geometry.vertices.len()];
-    for (i, face) in geometry.vertex_indices.chunks_exact(3).enumerate() {
-        vertex_adjacent_faces[face[0] as usize].push(i);
-        vertex_adjacent_faces[face[1] as usize].push(i);
-        vertex_adjacent_faces[face[2] as usize].push(i);
-    }
+    let (filtered_adjacent_faces, face_vertex_normals) =
+        triangle_face_vertex_normals(&geometry.vertices, &geometry.vertex_indices);
 
     let mut vertex_cache = VertexCache::default();
 
@@ -1402,26 +1382,10 @@ fn append_geometry(
             .get(face_index)
             .unwrap_or(&geometry.face_colors[0]);
 
-        let vertex_position = geometry.vertices[*vertex_index as usize];
-
         // Each normal is uniquely determined by the set of filtered adjacent faces
-        // TODO: Also check hard edges.
-        // TODO: Optimize this?
-        // TODO: Add to geometry_tools?
-        let face_normal = face_normals[face_index];
-        let adjacent_faces: BTreeSet<_> = vertex_adjacent_faces[*vertex_index as usize]
-            .iter()
-            .copied()
-            .filter(|f| face_normals[*f].angle_between(face_normal).abs() < 89f32.to_radians())
-            .collect();
+        let adjacent_faces = filtered_adjacent_faces[i].clone();
 
-        // Smooth normals are the average of the adjacent face normals.
-        // TODO: Weight by face area?
-        let vertex_normal = adjacent_faces
-            .iter()
-            .map(|f| face_normals[*f])
-            .sum::<Vec3>()
-            .normalize();
+        let vertex_position = geometry.vertices[*vertex_index as usize];
 
         // Store separate indices for position and color.
         // TODO: Create a struct for this?
@@ -1434,6 +1398,7 @@ fn append_geometry(
         };
 
         let vertex_color = rgba_color(face_vertex_key.color, current_color, color_table);
+        let vertex_normal = face_vertex_normals[i];
 
         let new_index = insert_vertex(
             face_vertex_key,
