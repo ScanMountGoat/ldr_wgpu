@@ -7,6 +7,7 @@ use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
 use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
 use normal::triangle_face_vertex_normals;
+use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
@@ -255,8 +256,9 @@ impl State {
         let start = std::time::Instant::now();
         let render_data = load_render_data(&device, scene, color_table);
         println!(
-            "Load {} parts and {} unique parts: {:?}",
+            "Load {} parts, {} unique colored parts, and {} unique parts: {:?}",
             render_data.solid.draw_count,
+            scene.geometry_world_transforms.len(),
             scene.geometry_cache.len(),
             start.elapsed()
         );
@@ -1090,7 +1092,21 @@ fn load_render_data(
     let mut alpha_sorted: Vec<_> = scene.geometry_world_transforms.iter().collect();
     alpha_sorted.sort_by_key(|((_, color), _)| is_transparent(color_table, color));
 
+    // Normals only need to be calculated once for each part.
+    let vertex_normals: HashMap<_, _> = scene
+        .geometry_cache
+        .par_iter()
+        .map(|(name, geometry)| {
+            (
+                name.clone(),
+                triangle_face_vertex_normals(&geometry.vertices, &geometry.vertex_indices),
+            )
+        })
+        .collect();
+
     // TODO: perform these conversions in parallel?
+    // TODO: Move indexing and normals to ldr_tools so it can be done once per part.
+    // TODO: Parellelizing this will require scanning the sizes to calculate buffer offsets.
     for ((name, color), transforms) in alpha_sorted {
         // Create separate vertex data if a part has multiple colors.
         // This is necessary since we store face colors per vertex.
@@ -1100,6 +1116,8 @@ fn load_render_data(
         let base_edge_index = combined_edge_indices.len() as u32;
         let vertex_offset = combined_vertices.len() as i32;
 
+        let adjacent_faces_normals = &vertex_normals[name];
+
         append_geometry(
             &mut combined_vertices,
             &mut combined_indices,
@@ -1107,6 +1125,7 @@ fn load_render_data(
             geometry,
             *color,
             color_table,
+            adjacent_faces_normals,
         );
 
         let is_transparent = color_table
@@ -1353,6 +1372,9 @@ impl VertexCache {
     }
 }
 
+// TODO: Indexing should only happen once per part.
+// LDrawGeometry -> IndexedLDrawGeometry -> apply colors -> vertex data
+
 fn append_geometry(
     vertices: &mut Vec<shader::model::VertexInput>,
     vertex_indices: &mut Vec<u32>,
@@ -1360,6 +1382,7 @@ fn append_geometry(
     geometry: &ldr_tools::LDrawGeometry,
     current_color: u32,
     color_table: &HashMap<u32, LDrawColor>,
+    adjacent_faces_normals: &(Vec<BTreeSet<usize>>, Vec<Vec3>),
 ) {
     // TODO: Edge colors?
     // TODO: Don't calculate grainy faces to save geometry?
@@ -1367,11 +1390,9 @@ fn append_geometry(
     // TODO: missing color codes?
     // TODO: publicly expose color handling logic in ldr_tools.
     // TODO: handle the case where the face color list is empty?
-
-    let (filtered_adjacent_faces, face_vertex_normals) =
-        triangle_face_vertex_normals(&geometry.vertices, &geometry.vertex_indices);
-
     let mut vertex_cache = VertexCache::default();
+
+    let (filtered_adjacent_faces, face_vertex_normals) = adjacent_faces_normals;
 
     for (i, vertex_index) in geometry.vertex_indices.iter().enumerate() {
         // Assume faces are already triangulated.
