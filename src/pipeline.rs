@@ -5,23 +5,26 @@ pub fn create_pipeline(
     surface_format: wgpu::TextureFormat,
     edges: bool,
 ) -> wgpu::RenderPipeline {
-    let shader = shader::model::create_shader_module(device);
+    let module = shader::model::create_shader_module(device);
     let render_pipeline_layout = shader::model::create_pipeline_layout(device);
 
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Render Pipeline"),
         layout: Some(&render_pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[
-                shader::model::VertexInput::vertex_buffer_layout(wgpu::VertexStepMode::Vertex),
-                shader::model::InstanceInput::vertex_buffer_layout(wgpu::VertexStepMode::Instance),
-            ],
-        },
+        vertex: shader::model::vertex_state(
+            &module,
+            &shader::model::vs_main_entry(
+                wgpu::VertexStepMode::Vertex,
+                wgpu::VertexStepMode::Instance,
+            ),
+        ),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: if edges { "fs_edge_main" } else { "fs_main" },
+            module: &module,
+            entry_point: if edges {
+                shader::model::ENTRY_FS_EDGE_MAIN
+            } else {
+                shader::model::ENTRY_FS_MAIN
+            },
             targets: &[Some(wgpu::ColorTargetState {
                 format: surface_format,
                 // Premultiplied alpha.

@@ -109,6 +109,7 @@ pub mod compute {
             )
     }
 }
+pub const ENTRY_MAIN: &str = "main";
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
     let source = std::borrow::Cow::Borrowed(include_str!("scan.wgsl"));
     device

@@ -128,6 +128,7 @@ fn is_visible(index: u32) -> bool {
     // Bounding spheres for frustum culling.
 	let bounding_sphere = instance_bounds[index].sphere;
     let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
+    // Assume no scaling in the view matrix.
     let radius = bounding_sphere.w;
 
     if (!is_within_view_frustum(center_view, radius)) {

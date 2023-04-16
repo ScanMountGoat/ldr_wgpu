@@ -19,22 +19,6 @@ pub struct VertexInput {
     pub color: u32,
     pub normal: glam::Vec4,
 }
-const _: () = assert!(
-    std::mem::size_of:: < VertexInput > () == 32,
-    "size of VertexInput does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(VertexInput, position) == 0,
-    "offset of VertexInput.position does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(VertexInput, color) == 12,
-    "offset of VertexInput.color does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(VertexInput, normal) == 16,
-    "offset of VertexInput.normal does not match WGSL"
-);
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InstanceInput {
@@ -43,26 +27,6 @@ pub struct InstanceInput {
     pub model_matrix_2: glam::Vec4,
     pub model_matrix_3: glam::Vec4,
 }
-const _: () = assert!(
-    std::mem::size_of:: < InstanceInput > () == 64,
-    "size of InstanceInput does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(InstanceInput, model_matrix_0) == 0,
-    "offset of InstanceInput.model_matrix_0 does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(InstanceInput, model_matrix_1) == 16,
-    "offset of InstanceInput.model_matrix_1 does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(InstanceInput, model_matrix_2) == 32,
-    "offset of InstanceInput.model_matrix_2 does not match WGSL"
-);
-const _: () = assert!(
-    memoffset::offset_of!(InstanceInput, model_matrix_3) == 48,
-    "offset of InstanceInput.model_matrix_3 does not match WGSL"
-);
 pub mod bind_groups {
     pub struct BindGroup0(wgpu::BindGroup);
     pub struct BindGroupLayout0<'a> {
@@ -137,7 +101,7 @@ pub mod vertex {
                 shader_location: 2,
             },
         ];
-        pub fn vertex_buffer_layout(
+        pub const fn vertex_buffer_layout(
             step_mode: wgpu::VertexStepMode,
         ) -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
@@ -174,7 +138,7 @@ pub mod vertex {
                 shader_location: 6,
             },
         ];
-        pub fn vertex_buffer_layout(
+        pub const fn vertex_buffer_layout(
             step_mode: wgpu::VertexStepMode,
         ) -> wgpu::VertexBufferLayout<'static> {
             wgpu::VertexBufferLayout {
@@ -183,6 +147,35 @@ pub mod vertex {
                 attributes: &super::InstanceInput::VERTEX_ATTRIBUTES,
             }
         }
+    }
+}
+pub const ENTRY_VS_MAIN: &str = "vs_main";
+pub const ENTRY_FS_MAIN: &str = "fs_main";
+pub const ENTRY_FS_EDGE_MAIN: &str = "fs_edge_main";
+pub struct VertexEntry<const N: usize> {
+    entry_point: &'static str,
+    buffers: [wgpu::VertexBufferLayout<'static>; N],
+}
+pub fn vertex_state<'a, const N: usize>(
+    module: &'a wgpu::ShaderModule,
+    entry: &'a VertexEntry<N>,
+) -> wgpu::VertexState<'a> {
+    wgpu::VertexState {
+        module,
+        entry_point: entry.entry_point,
+        buffers: &entry.buffers,
+    }
+}
+pub fn vs_main_entry(
+    vertex_input: wgpu::VertexStepMode,
+    instance_input: wgpu::VertexStepMode,
+) -> VertexEntry<2> {
+    VertexEntry {
+        entry_point: ENTRY_VS_MAIN,
+        buffers: [
+            VertexInput::vertex_buffer_layout(vertex_input),
+            InstanceInput::vertex_buffer_layout(instance_input),
+        ],
     }
 }
 pub fn create_shader_module(device: &wgpu::Device) -> wgpu::ShaderModule {
