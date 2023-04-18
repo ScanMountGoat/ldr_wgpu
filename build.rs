@@ -24,11 +24,7 @@ fn main() {
         "visibility.wgsl",
         "src/shader/visibility.rs",
     );
-    write_shader(
-        "src/shader/scan.wgsl",
-        "scan.wgsl",
-        "src/shader/scan.rs",
-    );
+    write_shader("src/shader/scan.wgsl", "scan.wgsl", "src/shader/scan.rs");
     write_shader(
         "src/shader/scan_add.wgsl",
         "scan_add.wgsl",
