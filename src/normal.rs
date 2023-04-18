@@ -71,6 +71,10 @@ mod tests {
 
     use glam::vec3;
 
+    fn set<const N: usize>(x: [usize; N]) -> BTreeSet<usize> {
+        BTreeSet::from(x)
+    }
+
     #[test]
     fn normals_single_triangle() {
         let (adjacent, normals) = triangle_face_vertex_normals(
@@ -82,9 +86,49 @@ mod tests {
             &[0, 1, 2],
         );
 
-        assert_eq!(vec![BTreeSet::from([0]); 3], adjacent);
+        assert_eq!(vec![set([0]); 3], adjacent);
         assert_eq!(vec![vec3(0.0, 0.0, 1.0); 3], normals);
     }
 
-    // TODO: Test a simple shape with and without hard edges
+    #[test]
+    fn normals_tetrahedron() {
+        // TODO: Make this more mathematically precise
+        let (adjacent, normals) = triangle_face_vertex_normals(
+            &[
+                vec3(0.000000, -0.707000, -1.000000),
+                vec3(0.866025, -0.707000, 0.500000),
+                vec3(-0.866025, -0.707000, 0.500000),
+                vec3(0.000000, 0.707000, 0.000000),
+            ],
+            &[0, 3, 1, 0, 1, 2, 1, 3, 2, 2, 3, 0],
+        );
+        // The angle threshold should split all faces.
+        assert_eq!(
+            vec![
+                set([0]),
+                set([0]),
+                set([0]),
+                set([1]),
+                set([1]),
+                set([1]),
+                set([2]),
+                set([2]),
+                set([2]),
+                set([3]),
+                set([3]),
+                set([3])
+            ],
+            adjacent
+        );
+        let n0 = vec3(0.816483, 0.333378, -0.47139645);
+        let n1 = vec3(0.0, -1.0, 0.0);
+        let n2 = vec3(0.0, 0.3333781, 0.94279325);
+        let n3 = vec3(-0.816483, 0.333378, -0.47139645);
+        assert_eq!(
+            vec![n0, n0, n0, n1, n1, n1, n2, n2, n2, n3, n3, n3],
+            normals
+        );
+    }
+
+    // TODO: Test a simple 2D mesh with and without hard edges
 }
