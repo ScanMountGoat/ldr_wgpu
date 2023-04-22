@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec4Swizzles};
 use ldr_tools::{LDrawColor, LDrawSceneInstanced};
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
@@ -77,14 +77,12 @@ pub fn load_render_data(
     // TODO: perform these conversions in parallel?
     // TODO: Parellelizing this will require scanning the sizes to calculate buffer offsets.
     for ((name, color), transforms) in alpha_sorted {
-        // Create separate vertex data if a part has multiple colors.
-        // This is necessary since we store face colors per vertex.
-        let geometry = &scene.geometry_cache[name];
-
         let base_index = combined_indices.len() as u32;
         let base_edge_index = combined_edge_indices.len() as u32;
         let vertex_offset = combined_vertices.len() as i32;
 
+        // Create separate vertex data if a part has multiple colors.
+        // This is necessary since we store face colors per vertex.
         // Copy the vertex data so that we can replace the color.
         let mut vertex_data = part_vertex_data[name].clone();
         vertex_data.replace_colors(*color, color_table);
@@ -121,8 +119,12 @@ pub fn load_render_data(
             };
             indirect_draws.push(draw);
 
-            let bounds = calculate_instance_bounds(geometry, transform);
+            // Transform the bounds from the cached geometry.
+            // This avoids looping over the points again and improves performance.
+            // TODO: Find an efficient way to potentially update this each frame.
+            let bounds = transform_bounds(vertex_data.bounds, *transform);
             instance_bounds.push(bounds);
+
             combined_transforms.push(*transform);
 
             is_part_transparent.push(is_transparent as u32);
@@ -268,37 +270,28 @@ pub fn load_render_data(
     }
 }
 
-fn calculate_instance_bounds(
-    geometry: &ldr_tools::LDrawGeometry,
-    transform: &Mat4,
+fn transform_bounds(
+    bounds: crate::shader::culling::InstanceBounds,
+    transform: Mat4,
 ) -> crate::shader::culling::InstanceBounds {
-    // TODO: Find an efficient way to potentially update this each frame.
-    let points_world: Vec<_> = geometry
-        .positions
-        .iter()
-        .map(|v| transform.transform_point3(*v))
-        .collect();
-
-    let sphere_center = points_world.iter().sum::<Vec3>() / points_world.len().max(1) as f32;
-    let sphere_radius = points_world
-        .iter()
-        .map(|v| v.distance(sphere_center))
-        .reduce(f32::max)
-        .unwrap_or_default();
-
-    let min_xyz = points_world
-        .iter()
-        .copied()
-        .reduce(Vec3::min)
-        .unwrap_or_default();
-    let max_xyz = points_world
-        .iter()
-        .copied()
-        .reduce(Vec3::max)
-        .unwrap_or_default();
+    // More efficient than transforming each corner of the AABB.
+    // https://stackoverflow.com/questions/6053522/how-to-recalculate-axis-aligned-bounding-box-after-translate-rotate
+    let mut min_xyz = transform.col(3).xyz();
+    let mut max_xyz = transform.col(3).xyz();
+    for i in 0..3 {
+        for j in 0..3 {
+            let a = transform.row(i)[j] * bounds.min_xyz[j];
+            let b = transform.row(i)[j] * bounds.max_xyz[j];
+            min_xyz[i] += if a < b { a } else { b };
+            max_xyz[i] += if a < b { b } else { a };
+        }
+    }
 
     crate::shader::culling::InstanceBounds {
-        sphere: sphere_center.extend(sphere_radius),
+        // Assume no scaling for now to simplify the math.
+        sphere: transform
+            .transform_point3(bounds.sphere.xyz())
+            .extend(bounds.sphere.w),
         min_xyz: min_xyz.extend(0.0),
         max_xyz: max_xyz.extend(0.0),
     }
@@ -337,6 +330,79 @@ pub fn draw_indirect<'a>(
             &data.compacted_indirect_buffer,
             0,
             data.compacted_draw_count,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::{vec3, vec4};
+
+    use crate::shader::culling::InstanceBounds;
+
+    use super::*;
+
+    #[test]
+    fn transform_bounds_identity() {
+        assert_eq!(
+            InstanceBounds {
+                sphere: vec4(0.0, 0.0, 0.0, 1.0),
+                min_xyz: vec4(-1.0, -1.0, -1.0, 0.0),
+                max_xyz: vec4(1.0, 1.0, 1.0, 0.0),
+            },
+            transform_bounds(
+                InstanceBounds {
+                    sphere: vec4(0.0, 0.0, 0.0, 1.0),
+                    min_xyz: vec4(-1.0, -1.0, -1.0, 0.0),
+                    max_xyz: vec4(1.0, 1.0, 1.0, 0.0),
+                },
+                Mat4::IDENTITY
+            )
+        );
+    }
+
+    #[test]
+    fn transform_bounds_translation() {
+        assert_eq!(
+            InstanceBounds {
+                sphere: vec4(1.0, 2.0, 3.0, 1.0),
+                min_xyz: vec4(0.0, 1.0, 2.0, 0.0),
+                max_xyz: vec4(2.0, 3.0, 4.0, 0.0),
+            },
+            transform_bounds(
+                InstanceBounds {
+                    sphere: vec4(0.0, 0.0, 0.0, 1.0),
+                    min_xyz: vec4(-1.0, -1.0, -1.0, 0.0),
+                    max_xyz: vec4(1.0, 1.0, 1.0, 0.0),
+                },
+                Mat4::from_translation(vec3(1.0, 2.0, 3.0))
+            )
+        );
+    }
+
+    #[test]
+    fn transform_bounds_translation_rotation() {
+        assert_eq!(
+            InstanceBounds {
+                sphere: vec4(1.0, 2.0, 3.0, 1.0),
+                min_xyz: vec4(0.0, 1.0, 2.0, 0.0),
+                max_xyz: vec4(2.0, 3.0, 4.0, 0.0),
+            },
+            transform_bounds(
+                InstanceBounds {
+                    sphere: vec4(0.0, 0.0, 0.0, 1.0),
+                    min_xyz: vec4(-1.0, -1.0, -1.0, 0.0),
+                    max_xyz: vec4(1.0, 1.0, 1.0, 0.0),
+                },
+                // rotate x -180 degrees -> translate 1,2,3
+                // constructed manually to avoid precision issues
+                Mat4::from_cols_array_2d(&[
+                    [1.0, 0.0, 0.0, 0.0,],
+                    [0.0, -1.0, 0.0, 0.0,],
+                    [0.0, 0.0, -1.0, 0.0,],
+                    [1.0, 2.0, 3.0, 1.0,],
+                ])
+            )
         );
     }
 }

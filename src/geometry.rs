@@ -11,6 +11,7 @@ pub struct IndexedVertexData {
     pub vertices: Vec<crate::shader::model::VertexInput>,
     pub vertex_indices: Vec<u32>,
     pub edge_indices: Vec<u32>,
+    pub bounds: crate::shader::culling::InstanceBounds,
 }
 
 impl IndexedVertexData {
@@ -110,10 +111,13 @@ impl IndexedVertexData {
                 }),
         );
 
+        let bounds = calculate_bounds(&geometry.positions);
+
         Self {
             vertices,
             vertex_indices,
             edge_indices,
+            bounds,
         }
     }
 
@@ -122,6 +126,34 @@ impl IndexedVertexData {
         for vertex in &mut self.vertices {
             vertex.color = rgba_color(vertex.color, current_color, color_table);
         }
+    }
+}
+
+fn calculate_bounds(positions: &[Vec3]) -> crate::shader::culling::InstanceBounds {
+    let sphere_center = positions.iter().sum::<Vec3>() / positions.len().max(1) as f32;
+
+    let sphere_radius = positions
+        .iter()
+        .map(|v| v.distance(sphere_center))
+        .reduce(f32::max)
+        .unwrap_or_default();
+
+    let min_xyz = positions
+        .iter()
+        .copied()
+        .reduce(Vec3::min)
+        .unwrap_or_default();
+
+    let max_xyz = positions
+        .iter()
+        .copied()
+        .reduce(Vec3::max)
+        .unwrap_or_default();
+
+    crate::shader::culling::InstanceBounds {
+        sphere: sphere_center.extend(sphere_radius),
+        min_xyz: min_xyz.extend(0.0),
+        max_xyz: max_xyz.extend(0.0),
     }
 }
 

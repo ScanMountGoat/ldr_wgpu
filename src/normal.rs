@@ -17,6 +17,8 @@ pub fn triangle_face_vertex_normals(
             let v2 = vertices[face[1] as usize];
             let v3 = vertices[face[2] as usize];
 
+            // Don't normalize since the cross product is proportional to face area.
+            // This weights the normals by face area when summing later.
             let u = v2 - v1;
             let v = v3 - v1;
             u.cross(v)
