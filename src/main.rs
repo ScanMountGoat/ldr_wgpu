@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
 use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
-use rayon::prelude::*;
+use scene::{draw_indirect, IndirectSceneData};
 use texture::create_depth_pyramid_texture;
 use wgpu::util::DeviceExt;
 use winit::{
@@ -14,14 +14,15 @@ use winit::{
 };
 
 use crate::{
-    geometry::IndexedVertexData,
     pipeline::*,
+    scene::load_render_data,
     texture::{create_depth_texture, create_output_msaa_view},
 };
 
 mod geometry;
 mod normal;
 mod pipeline;
+mod scene;
 mod shader;
 mod texture;
 
@@ -59,43 +60,6 @@ struct CameraData {
     frustum: Vec4,
     p00: f32,
     p11: f32,
-}
-
-// wgpu already provides this type.
-// Make our own so we can derive bytemuck.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct DrawIndexedIndirect {
-    vertex_count: u32,
-    instance_count: u32,
-    base_index: u32,
-    vertex_offset: i32,
-    base_instance: u32,
-}
-
-/// Combined data for every part in the scene.
-/// Renderable with a single multidraw indirect call.
-struct IndirectSceneData {
-    instance_transforms_buffer: wgpu::Buffer,
-    instance_bounds_buffer: wgpu::Buffer,
-    visibility_buffer: wgpu::Buffer,
-    new_visibility_buffer: wgpu::Buffer,
-    scanned_new_visibility_buffer: wgpu::Buffer,
-    scanned_visibility_buffer: wgpu::Buffer,
-    transparent_buffer: wgpu::Buffer,
-    compacted_count_buffer: wgpu::Buffer,
-    compacted_count_staging_buffer: wgpu::Buffer,
-    vertex_buffer: wgpu::Buffer,
-    solid: IndirectData,
-    edges: IndirectData,
-}
-
-struct IndirectData {
-    index_buffer: wgpu::Buffer,
-    indirect_buffer: wgpu::Buffer,
-    compacted_indirect_buffer: wgpu::Buffer,
-    draw_count: u32,
-    compacted_draw_count: u32,
 }
 
 struct ScanBindGroups {
@@ -911,36 +875,6 @@ fn create_scan_bind_groups(
     }
 }
 
-fn draw_indirect<'a>(
-    render_pass: &mut wgpu::RenderPass<'a>,
-    scene: &'a IndirectSceneData,
-    data: &'a IndirectData,
-    supports_indirect_count: bool,
-) {
-    // Draw the instances of each unique part and color.
-    // This allows reusing most of the rendering state for better performance.
-    render_pass.set_index_buffer(data.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-    render_pass.set_vertex_buffer(0, scene.vertex_buffer.slice(..));
-    render_pass.set_vertex_buffer(1, scene.instance_transforms_buffer.slice(..));
-
-    // Draw each instance with a different transform.
-    if supports_indirect_count {
-        render_pass.multi_draw_indexed_indirect_count(
-            &data.compacted_indirect_buffer,
-            0,
-            &scene.compacted_count_buffer,
-            0,
-            data.draw_count,
-        );
-    } else {
-        render_pass.multi_draw_indexed_indirect(
-            &data.compacted_indirect_buffer,
-            0,
-            data.compacted_draw_count,
-        );
-    }
-}
-
 fn create_depth_pyramid(
     device: &wgpu::Device,
     window_size: winit::dpi::PhysicalSize<u32>,
@@ -992,283 +926,6 @@ fn depth_pyramid_bind_groups(
 
 const fn div_round_up(x: u32, d: u32) -> u32 {
     (x + d - 1) / d
-}
-
-fn load_render_data(
-    device: &wgpu::Device,
-    scene: &LDrawSceneInstanced,
-    color_table: &HashMap<u32, LDrawColor>,
-) -> IndirectSceneData {
-    // Combine all data into a single multidraw indirect call.
-    let mut combined_vertices = Vec::new();
-    let mut combined_indices = Vec::new();
-    let mut combined_transforms = Vec::new();
-    let mut indirect_draws = Vec::new();
-    let mut instance_bounds = Vec::new();
-    let mut is_part_transparent = Vec::new();
-
-    let mut combined_edge_indices = Vec::new();
-    let mut edge_indirect_draws = Vec::new();
-
-    // Sort so that transparent draws happen last for proper blending.
-    // Opaque objects evaluate to false and appear first when sorted.
-    // This is simpler than drawing separate opaque and transparent passes.
-    let mut alpha_sorted: Vec<_> = scene.geometry_world_transforms.iter().collect();
-    alpha_sorted.sort_by_key(|((_, color), _)| is_transparent(color_table, color));
-
-    // Geometry for parts appearing in multiple colors should be calculated only once.
-    // Use multiple threads to improve performance since parts are independent.
-    let part_vertex_data: HashMap<_, _> = scene
-        .geometry_cache
-        .par_iter()
-        .map(|(name, geometry)| (name.clone(), IndexedVertexData::from_geometry(geometry)))
-        .collect();
-
-    // TODO: perform these conversions in parallel?
-    // TODO: Parellelizing this will require scanning the sizes to calculate buffer offsets.
-    for ((name, color), transforms) in alpha_sorted {
-        // Create separate vertex data if a part has multiple colors.
-        // This is necessary since we store face colors per vertex.
-        let geometry = &scene.geometry_cache[name];
-
-        let base_index = combined_indices.len() as u32;
-        let base_edge_index = combined_edge_indices.len() as u32;
-        let vertex_offset = combined_vertices.len() as i32;
-
-        // Copy the vertex data so that we can replace the color.
-        let mut vertex_data = part_vertex_data[name].clone();
-        vertex_data.replace_colors(*color, color_table);
-
-        combined_vertices.extend_from_slice(&vertex_data.vertices);
-        combined_indices.extend_from_slice(&vertex_data.vertex_indices);
-        combined_edge_indices.extend_from_slice(&vertex_data.edge_indices);
-
-        let is_transparent = color_table
-            .get(color)
-            .map(|c| c.rgba_linear[3] < 1.0)
-            .unwrap_or_default();
-
-        // Each draw specifies the part mesh using an offset and count.
-        // The base instance steps through the transforms buffer.
-        // Each draw uses a single instance to allow culling individual draws.
-        for transform in transforms {
-            // TODO: Is this the best way to share culling information with edges?
-            let edge_indirect_draw = DrawIndexedIndirect {
-                vertex_count: combined_edge_indices.len() as u32 - base_edge_index,
-                instance_count: 1,
-                base_index: base_edge_index,
-                vertex_offset,
-                base_instance: combined_transforms.len() as u32,
-            };
-            edge_indirect_draws.push(edge_indirect_draw);
-
-            let draw = DrawIndexedIndirect {
-                vertex_count: combined_indices.len() as u32 - base_index,
-                instance_count: 1,
-                base_index,
-                vertex_offset,
-                base_instance: combined_transforms.len() as u32,
-            };
-            indirect_draws.push(draw);
-
-            let bounds = calculate_instance_bounds(geometry, transform);
-            instance_bounds.push(bounds);
-            combined_transforms.push(*transform);
-
-            is_part_transparent.push(is_transparent as u32);
-        }
-    }
-
-    println!(
-        "Vertices: {}, Indices: {}",
-        combined_vertices.len(),
-        combined_indices.len()
-    );
-
-    let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("vertex buffer"),
-        contents: bytemuck::cast_slice(&combined_vertices),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-
-    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("index buffer"),
-        contents: bytemuck::cast_slice(&combined_indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-
-    let edge_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("edge index buffer"),
-        contents: bytemuck::cast_slice(&combined_edge_indices),
-        usage: wgpu::BufferUsages::INDEX,
-    });
-
-    // TODO: the non compacted buffer could just be storage?
-    let indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("indirect buffer"),
-        contents: bytemuck::cast_slice(&indirect_draws),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
-    });
-    let compacted_indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("compacted indirect buffer"),
-        contents: bytemuck::cast_slice(&indirect_draws),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
-    });
-
-    let edge_indirect_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("edge indirect buffer"),
-        contents: bytemuck::cast_slice(&edge_indirect_draws),
-        usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
-    });
-    let compacted_edge_indirect_buffer =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("compacted edge indirect buffer"),
-            contents: bytemuck::cast_slice(&edge_indirect_draws),
-            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
-        });
-
-    let instance_transforms_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("instance transforms buffer"),
-        contents: bytemuck::cast_slice(&combined_transforms),
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-
-    let instance_bounds_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("instance bounds buffer"),
-        contents: bytemuck::cast_slice(&instance_bounds),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    // Start with all objects visible.
-    // This should only negatively impact performance on the first frame.
-    let visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("visibility buffer"),
-        contents: bytemuck::cast_slice(&vec![1u32; indirect_draws.len()]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-    let new_visibility_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("new visibility buffer"),
-        contents: bytemuck::cast_slice(&vec![0u32; indirect_draws.len()]),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-    });
-
-    // Used to prevent transparent objects occluding other objects.
-    let transparent_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("transparent buffer"),
-        contents: bytemuck::cast_slice(&is_part_transparent),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    let compacted_count_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("compacted draw count buffer"),
-        contents: bytemuck::cast_slice(&[0u32]),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::INDIRECT,
-    });
-
-    let compacted_count_staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("compacted count staging buffer"),
-        size: compacted_count_buffer.size(),
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let scanned_visibility_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("scanned visibility buffer"),
-        size: visibility_buffer.size(),
-        usage: wgpu::BufferUsages::STORAGE,
-        mapped_at_creation: false,
-    });
-
-    let scanned_new_visibility_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("scanned visibility buffer"),
-        size: visibility_buffer.size(),
-        usage: wgpu::BufferUsages::STORAGE,
-        mapped_at_creation: false,
-    });
-
-    IndirectSceneData {
-        vertex_buffer,
-        visibility_buffer,
-        new_visibility_buffer,
-        instance_transforms_buffer,
-        instance_bounds_buffer,
-        compacted_count_buffer,
-        compacted_count_staging_buffer,
-        scanned_visibility_buffer,
-        scanned_new_visibility_buffer,
-        transparent_buffer,
-        solid: IndirectData {
-            index_buffer,
-            indirect_buffer,
-            draw_count: indirect_draws.len() as u32,
-            compacted_draw_count: indirect_draws.len() as u32,
-            compacted_indirect_buffer,
-        },
-        edges: IndirectData {
-            index_buffer: edge_index_buffer,
-            indirect_buffer: edge_indirect_buffer,
-            draw_count: edge_indirect_draws.len() as u32,
-            compacted_draw_count: edge_indirect_draws.len() as u32,
-            compacted_indirect_buffer: compacted_edge_indirect_buffer,
-        },
-    }
-}
-
-fn is_transparent(color_table: &HashMap<u32, LDrawColor>, color: &u32) -> bool {
-    color_table
-        .get(color)
-        .map(|c| c.rgba_linear[3] < 1.0)
-        .unwrap_or_default()
-}
-
-fn calculate_instance_bounds(
-    geometry: &ldr_tools::LDrawGeometry,
-    transform: &Mat4,
-) -> shader::culling::InstanceBounds {
-    // TODO: Find an efficient way to potentially update this each frame.
-    let points_world: Vec<_> = geometry
-        .positions
-        .iter()
-        .map(|v| transform.transform_point3(*v))
-        .collect();
-
-    let sphere_center = points_world.iter().sum::<Vec3>() / points_world.len().max(1) as f32;
-    let sphere_radius = points_world
-        .iter()
-        .map(|v| v.distance(sphere_center))
-        .reduce(f32::max)
-        .unwrap_or_default();
-
-    let min_xyz = points_world
-        .iter()
-        .copied()
-        .reduce(Vec3::min)
-        .unwrap_or_default();
-    let max_xyz = points_world
-        .iter()
-        .copied()
-        .reduce(Vec3::max)
-        .unwrap_or_default();
-
-    shader::culling::InstanceBounds {
-        sphere: sphere_center.extend(sphere_radius),
-        min_xyz: min_xyz.extend(0.0),
-        max_xyz: max_xyz.extend(0.0),
-    }
-}
-
-fn rgba_color(color: u32, current_color: u32, color_table: &HashMap<u32, LDrawColor>) -> u32 {
-    let replaced_color = if color == 16 { current_color } else { color };
-
-    color_table
-        .get(&replaced_color)
-        .map(|c| {
-            // TODO: What is the GPU endianness?
-            u32::from_le_bytes(c.rgba_linear.map(|f| (f * 255.0) as u8))
-        })
-        .unwrap_or(0xFFFFFFFF)
 }
 
 fn calculate_camera_data(

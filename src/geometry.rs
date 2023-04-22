@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use glam::Vec3;
 use ldr_tools::LDrawColor;
 
-use crate::{normal::triangle_face_vertex_normals, rgba_color};
+use crate::normal::triangle_face_vertex_normals;
 
 // TODO: Move this to ldr_tools and add tests.
 #[derive(Clone)]
@@ -179,4 +179,16 @@ fn insert_vertex(
         vertices.push(new_vertex);
         new_index
     }
+}
+
+fn rgba_color(color: u32, current_color: u32, color_table: &HashMap<u32, LDrawColor>) -> u32 {
+    let replaced_color = if color == 16 { current_color } else { color };
+
+    color_table
+        .get(&replaced_color)
+        .map(|c| {
+            // TODO: What is the GPU endianness?
+            u32::from_le_bytes(c.rgba_linear.map(|f| (f * 255.0) as u8))
+        })
+        .unwrap_or(0xFFFFFFFF)
 }
