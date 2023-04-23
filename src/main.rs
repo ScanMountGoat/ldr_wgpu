@@ -156,17 +156,16 @@ impl State {
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgpu::Features::POLYGON_MODE_LINE;
 
+        println!("{:?}", adapter.features());
+
+        // Indirect count isn't supported on metal, so check first.
         let supports_indirect_count = adapter
             .features()
             .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
-        println!("{:?}", adapter.features());
-
         if supports_indirect_count {
             features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
         }
 
-        // TODO: Add an optimized code path if MULTI_DRAW_INDIRECT_COUNT is available.
-        // This avoids synchronization with the CPU.
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
