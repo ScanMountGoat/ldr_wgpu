@@ -3,7 +3,7 @@
 Major optimizations and design decisions are outlined in the sections below. This highlights major techniques without focusing on specific implementation details. See the comments in the source code for implementation decisions.
 
 ### Loading
-Files are loaded using the code provided by the [ldr_tools](https://github.com/ScanMountGoat/ldr_tools_blender) library used by the ldr_tools_blender addon. This handles parsing LDraw files as well as most of the geometry processing. Parsing of the LDraw files themselves is handled by [weldr](https://github.com/djeedai/weldr).
+Files are loaded using the code provided by the [ldr_tools](https://github.com/ScanMountGoat/ldr_tools_blender) library used by the [ldr_tools_blender](https://github.com/ScanMountGoat/ldr_tools_blender) addon. This handles parsing LDraw files as well as most of the geometry processing. Parsing of the LDraw files themselves is handled by [weldr](https://github.com/djeedai/weldr).
 
 Processing time for LDraw files is often dominated by the vertex count. Avoiding unecessary work is key for good performance. The main model geometry is loaded using standard resolution primitives and studs without logos. This may change in the future. 
 
