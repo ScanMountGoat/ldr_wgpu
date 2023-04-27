@@ -19,6 +19,7 @@ use crate::{
     texture::{create_depth_texture, create_output_msaa_view},
 };
 
+mod edge_split;
 mod geometry;
 mod normal;
 mod pipeline;
@@ -455,6 +456,9 @@ impl State {
                 });
         }
 
+        // TODO: Draw transparent twice with front faces and then back faces culled?
+        // TODO: Fix high contrast studs (manually add stud files to ldr_tools)
+        // TODO: Port right click pan from ssbh_wgpu
         // Draw everything that was visible last frame.
         self.previously_visible_pass(&mut encoder, &output_view);
 

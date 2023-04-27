@@ -3,9 +3,8 @@ use std::collections::{BTreeSet, HashMap};
 use glam::Vec3;
 use ldr_tools::LDrawColor;
 
-use crate::normal::triangle_face_vertex_normals;
+use crate::{edge_split::split_sharp_edges, normal::triangle_face_vertex_normals};
 
-// TODO: Move this to ldr_tools and add tests.
 #[derive(Clone)]
 pub struct IndexedVertexData {
     pub vertices: Vec<crate::shader::model::VertexInput>,
@@ -16,21 +15,39 @@ pub struct IndexedVertexData {
 
 impl IndexedVertexData {
     pub fn from_geometry(geometry: &ldr_tools::LDrawGeometry) -> Self {
-        let mut vertices = Vec::new();
-        let mut vertex_indices = Vec::new();
-        let mut edge_indices = Vec::new();
         // TODO: Edge colors?
         // TODO: Don't calculate grainy faces to save geometry?
 
         // TODO: missing color codes?
         // TODO: publicly expose color handling logic in ldr_tools.
         // TODO: handle the case where the face color list is empty?
-        let mut vertex_cache = VertexCache::default();
+
+        // TODO: Should splitting affect edges as well?
+        let sharp_edges: Vec<_> = geometry
+            .edge_position_indices
+            .iter()
+            .zip(geometry.is_edge_sharp.iter())
+            .filter_map(|(e, sharp)| sharp.then_some(*e))
+            .collect();
+
+        let (positions, position_indices) = split_sharp_edges(
+            &geometry.positions,
+            &geometry.position_indices,
+            &sharp_edges,
+        );
 
         let (filtered_adjacent_faces, face_vertex_normals) =
-            triangle_face_vertex_normals(&geometry.positions, &geometry.position_indices);
+            triangle_face_vertex_normals(&positions, &position_indices);
 
-        for (i, vertex_index) in geometry.position_indices.iter().enumerate() {
+        // TODO: make this its own function?
+        // Reindex the geometry now that all attributes have been calculated.
+        let mut vertex_cache = VertexCache::default();
+
+        let mut vertices = Vec::new();
+        let mut vertex_indices = Vec::new();
+        let mut edge_indices = Vec::new();
+
+        for (i, vertex_index) in position_indices.iter().enumerate() {
             // Assume faces are already triangulated.
             // This means every 3 indices defines a new face.
             let face_index = i / 3;
@@ -42,7 +59,7 @@ impl IndexedVertexData {
             // Each normal is uniquely determined by the set of filtered adjacent faces
             let adjacent_faces = filtered_adjacent_faces[i].clone();
 
-            let vertex_position = geometry.positions[*vertex_index as usize];
+            let vertex_position = positions[*vertex_index as usize];
 
             // Store separate indices for position and color.
             // TODO: Create a struct for this?
