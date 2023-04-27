@@ -460,7 +460,7 @@ impl State {
         // TODO: Fix high contrast studs (manually add stud files to ldr_tools)
         // TODO: Port right click pan from ssbh_wgpu
         // Draw everything that was visible last frame.
-        self.previously_visible_pass(&mut encoder, &output_view);
+        self.model_pass(&mut encoder, &output_view, true);
 
         // Apply culling to set visibility and enable newly visible objects.
         self.depth_pyramid_pass(&mut encoder);
@@ -488,81 +488,46 @@ impl State {
         }
 
         // Draw everything that is newly visible in this frame.
-        self.newly_visible_pass(&mut encoder, &output_view);
+        self.model_pass(&mut encoder, &output_view, false);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())
     }
 
-    fn previously_visible_pass(
+    fn model_pass(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         output_view: &wgpu::TextureView,
+        first_pass: bool,
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Previously Visible Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.output_view_msaa,
-                resolve_target: Some(output_view),
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: true,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
-                depth_ops: Some(depth_op_reversed()),
-                stencil_ops: None,
+            label: Some(if first_pass {
+                "Visible Pass"
+            } else {
+                "Previously Visible Pass"
             }),
-        });
-
-        shader::model::bind_groups::set_bind_groups(
-            &mut render_pass,
-            shader::model::bind_groups::BindGroups {
-                bind_group0: &self.bind_group0,
-            },
-        );
-
-        // TODO: make this a method?
-        render_pass.set_pipeline(&self.model_pipeline);
-        draw_indirect(
-            &mut render_pass,
-            &self.render_data,
-            &self.render_data.solid,
-            self.supports_indirect_count,
-        );
-
-        render_pass.set_pipeline(&self.model_edges_pipeline);
-        draw_indirect(
-            &mut render_pass,
-            &self.render_data,
-            &self.render_data.edges,
-            self.supports_indirect_count,
-        );
-    }
-
-    fn newly_visible_pass(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        output_view: &wgpu::TextureView,
-    ) {
-        // Load the data from the first model pass.
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Newly Visible Pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.output_view_msaa,
                 resolve_target: Some(output_view),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: if first_pass {
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: true,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: true,
+                depth_ops: Some(if first_pass {
+                    depth_op_reversed()
+                } else {
+                    wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    }
                 }),
                 stencil_ops: None,
             }),
@@ -575,7 +540,6 @@ impl State {
             },
         );
 
-        // TODO: make this a method?
         render_pass.set_pipeline(&self.model_pipeline);
         draw_indirect(
             &mut render_pass,
