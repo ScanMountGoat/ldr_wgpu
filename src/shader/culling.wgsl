@@ -17,6 +17,9 @@ var<uniform> camera: Camera;
 @group(0) @binding(1)
 var depth_pyramid: texture_2d<f32>;
 
+@group(0) @binding(2)
+var depth_sampler: sampler;
+
 struct InstanceBounds {
     sphere: vec4<f32>,
     min_xyz: vec4<f32>,
@@ -60,6 +63,7 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // Occlusion based culling using axis aligned bounding boxes.
     // Transform the corners to the same space as the depth map.
     // https://interplayoflight.wordpress.com/2017/11/15/experiments-in-gpu-based-occlusion-culling/
+    // TODO: Faster to use the calculation that transforms the AABB directly?
     let aabb_corners = array<vec3<f32>, 8>(
         world_to_coords(min_xyz),
         world_to_coords(vec3(max_xyz.x, min_xyz.yz)),
@@ -96,31 +100,25 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
 
     // Calculate the mip level that will be covered by at most 2x2 pixels.
     // 4x4 pixels on the base level should use mip level 1.
-    var level = i32(ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y)))) - 1;
-
-    // Get the coords of the texels accessed by a gather operation for the center.
-    // Using the bounding box center ensures all four texels are adjacent.
-    // See the Vulkan spec for a reference on linear filter calculations.
-    // https://registry.khronos.org/vulkan/specs/1.3-khr-extensions/html/chap16.html#textures-unnormalized-to-integer
-    let center = (aabb.xy + aabb.zw) * 0.5;
-    let center_coords = center * vec2<f32>(textureDimensions(depth_pyramid, level)) - 0.5;
-    let coord_x = i32(floor(center_coords.x));
-    let coord_y = i32(floor(center_coords.y));
+    // 3x3 pixels should also use level 1.
+    let level = ceil(log2(max(aabb_size_base_level.x, aabb_size_base_level.y))) - 1.0;
 
     // Compute the min depth of the 2x2 texels for the AABB.
     // The depth pyramid also uses min for reduction.
     // This helps make the occlusion conservative.
     // The comparisons are reversed since we use a reversed-z buffer.
     // The AABB coordinates are between 0.0 and 1.0.
-    let depth00 = textureLoad(depth_pyramid, vec2(coord_x, coord_y), level).x;
-    let depth01 = textureLoad(depth_pyramid, vec2(coord_x+1, coord_y), level).x;
-    let depth10 = textureLoad(depth_pyramid, vec2(coord_x, coord_y+1), level).x;
-    let depth11 = textureLoad(depth_pyramid, vec2(coord_x+1, coord_y+1), level).x;
+    let depth00 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.xy, level).x;
+    let depth01 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.zy, level).x;
+    let depth10 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.xw, level).x;
+    let depth11 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.zw, level).x;
     let min_occluder_depth = min(min(depth00, depth01), min(depth10, depth11));
 
     // Check if the closest depth of the object exceeds the farthest occluder depth.
     // This means the object is definitely occluded.
     // The comparisons are reversed since we use a reversed-z buffer.
+    // TODO: This will run into issues since we don't scale the parts.
+    // TODO: Account for bounding boxes overlapping?
     return max_xyz.z < min_occluder_depth;
 }
 

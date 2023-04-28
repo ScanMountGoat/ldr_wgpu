@@ -249,11 +249,19 @@ impl State {
 
         let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
 
+        let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         let culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
             &device,
             shader::culling::bind_groups::BindGroupLayout0 {
                 camera: camera_culling_buffer.as_entire_buffer_binding(),
                 depth_pyramid: &depth_pyramid.all_mips,
+                depth_sampler: &depth_sampler,
             },
         );
 
@@ -408,12 +416,20 @@ impl State {
             self.output_view_msaa =
                 create_output_msaa_view(&self.device, new_size.width, new_size.height);
 
+            let depth_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+                min_filter: wgpu::FilterMode::Nearest,
+                mag_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            });
+
             // The textures were updated, so use views pointing to the new textures.
             self.culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
                 &self.device,
                 shader::culling::bind_groups::BindGroupLayout0 {
                     camera: self.camera_culling_buffer.as_entire_buffer_binding(),
                     depth_pyramid: &self.depth_pyramid.all_mips,
+                    depth_sampler: &depth_sampler,
                 },
             );
         }
