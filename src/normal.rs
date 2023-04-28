@@ -35,17 +35,17 @@ pub fn triangle_face_vertex_normals(
     }
 
     // Use a BTreeSet for a consistent hash value.
+    // Use a large angle threshold to only add creases on extreme angle changes.
     let filtered_adjacent_faces: Vec<BTreeSet<_>> = vertex_indices
         .iter()
         .enumerate()
         .map(|(i, vertex_index)| {
-            // TODO: Also check hard edges.
             let face_index = i / 3;
             let face_normal = face_normals[face_index];
             vertex_adjacent_faces[*vertex_index as usize]
                 .iter()
                 .copied()
-                .filter(|f| face_normals[*f].angle_between(face_normal).abs() < 89f32.to_radians())
+                .filter(|f| face_normals[*f].angle_between(face_normal).abs() < 90f32.to_radians())
                 .collect()
         })
         .collect();
@@ -56,7 +56,6 @@ pub fn triangle_face_vertex_normals(
             // TODO: Optimize this?
             // TODO: Add to geometry_tools?
             // Smooth normals are the average of the adjacent face normals.
-            // TODO: Weight by face area?
             faces
                 .iter()
                 .map(|f| face_normals[*f])

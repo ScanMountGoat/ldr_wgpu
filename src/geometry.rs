@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use glam::Vec3;
 use ldr_tools::LDrawColor;
 
-use crate::{edge_split::split_sharp_edges, normal::triangle_face_vertex_normals};
+use crate::{edge_split::split_edges, normal::triangle_face_vertex_normals};
 
 #[derive(Clone)]
 pub struct IndexedVertexData {
@@ -30,7 +30,7 @@ impl IndexedVertexData {
             .filter_map(|(e, sharp)| sharp.then_some(*e))
             .collect();
 
-        let (positions, position_indices) = split_sharp_edges(
+        let (positions, position_indices) = split_edges(
             &geometry.positions,
             &geometry.position_indices,
             &sharp_edges,
@@ -155,17 +155,21 @@ fn calculate_bounds(positions: &[Vec3]) -> crate::shader::culling::InstanceBound
         .reduce(f32::max)
         .unwrap_or_default();
 
+    // TODO: What value to pick?
+    let offset = 0.1;
     let min_xyz = positions
         .iter()
         .copied()
         .reduce(Vec3::min)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        - offset;
 
     let max_xyz = positions
         .iter()
         .copied()
         .reduce(Vec3::max)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        + offset;
 
     crate::shader::culling::InstanceBounds {
         sphere: sphere_center.extend(sphere_radius),
