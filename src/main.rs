@@ -863,7 +863,6 @@ fn create_depth_pyramid(
     window_size: winit::dpi::PhysicalSize<u32>,
     base_depth_view: &wgpu::TextureView,
 ) -> DepthPyramid {
-    // Always use power of two dimensions to avoid edge cases when downsampling.
     let width = window_size.width;
     let height = window_size.height;
 
