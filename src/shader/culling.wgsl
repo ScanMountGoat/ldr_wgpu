@@ -17,6 +17,8 @@ var<uniform> camera: Camera;
 @group(0) @binding(1)
 var depth_pyramid: texture_2d<f32>;
 
+// Assume this is a point sampler.
+// We don't want to interpolate depth values.
 @group(0) @binding(2)
 var depth_sampler: sampler;
 
@@ -112,14 +114,13 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     let depth01 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.zy, level).x;
     let depth10 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.xw, level).x;
     let depth11 = textureSampleLevel(depth_pyramid, depth_sampler, aabb.zw, level).x;
-    let min_occluder_depth = min(min(depth00, depth01), min(depth10, depth11));
+    let farthest_occluder_depth = min(min(depth00, depth01), min(depth10, depth11));
 
     // Check if the closest depth of the object exceeds the farthest occluder depth.
     // This means the object is definitely occluded.
     // The comparisons are reversed since we use a reversed-z buffer.
-    // TODO: This will run into issues since we don't scale the parts.
-    // TODO: Account for bounding boxes overlapping?
-    return max_xyz.z < min_occluder_depth;
+    let closest_depth = max_xyz.z;
+    return closest_depth < farthest_occluder_depth;
 }
 
 fn is_visible(index: u32) -> bool {
