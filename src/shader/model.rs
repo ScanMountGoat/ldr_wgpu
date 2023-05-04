@@ -4,13 +4,18 @@
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Camera {
     pub view_projection: glam::Mat4,
+    pub position: glam::Vec4,
 }
 const _: () = assert!(
-    std::mem::size_of:: < Camera > () == 64, "size of Camera does not match WGSL"
+    std::mem::size_of:: < Camera > () == 80, "size of Camera does not match WGSL"
 );
 const _: () = assert!(
     memoffset::offset_of!(Camera, view_projection) == 0,
     "offset of Camera.view_projection does not match WGSL"
+);
+const _: () = assert!(
+    memoffset::offset_of!(Camera, position) == 64,
+    "offset of Camera.position does not match WGSL"
 );
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]

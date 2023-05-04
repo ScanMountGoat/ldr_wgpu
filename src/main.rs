@@ -61,6 +61,7 @@ struct CameraData {
     frustum: Vec4,
     p00: f32,
     p11: f32,
+    position: Vec4,
 }
 
 struct ScanBindGroups {
@@ -209,6 +210,7 @@ impl State {
             label: Some("camera buffer"),
             contents: bytemuck::cast_slice(&[shader::model::Camera {
                 view_projection: camera_data.view_projection,
+                position: camera_data.position,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -381,6 +383,7 @@ impl State {
             0,
             bytemuck::cast_slice(&[shader::model::Camera {
                 view_projection: camera_data.view_projection,
+                position: camera_data.position,
             }]),
         );
         self.queue.write_buffer(
@@ -942,12 +945,15 @@ fn calculate_camera_data(
     let p00 = projection.col(0).x;
     let p11 = projection.col(1).y;
 
+    let position = view.inverse().col(3);
+
     CameraData {
         view,
         view_projection,
         frustum,
         p00,
         p11,
+        position,
     }
 }
 

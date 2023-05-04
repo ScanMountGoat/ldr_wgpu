@@ -1,5 +1,6 @@
 struct Camera {
     view_projection: mat4x4<f32>,
+    position: vec4<f32>
 }
 
 @group(0) @binding(0)
@@ -20,8 +21,9 @@ struct InstanceInput {
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) normal: vec3<f32>
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>
 }
 
 fn unpack_color(color: u32) -> vec4<f32> {
@@ -45,6 +47,7 @@ fn vs_main(
         instance.model_matrix_3,
     );
     var out: VertexOutput;
+    let position = model.position.xyz;
     out.clip_position = camera.view_projection * model_matrix * vec4<f32>(model.position.xyz, 1.0);
     out.color = unpack_color(model.color);
     // TODO: is this always correct?
@@ -54,10 +57,12 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Premultiplied alpha.
-    // TODO: Calculate view vector.
-    let lighting = dot(normalize(in.normal.xyz), normalize(vec3(-1.0))) * 0.5 + 0.5;
+    // TODO: avoid normalization?
+    // Calculate the lighting relative to the camera.
+    let viewVector = normalize(camera.position.xyz - in.position.xyz);
+    let lighting = dot(in.normal.xyz, viewVector) * 0.75 + 0.25;
     var color = in.color.rgb * lighting;
+    // Premultiplied alpha.
     return vec4(color * in.color.a, in.color.a);
 }
 
