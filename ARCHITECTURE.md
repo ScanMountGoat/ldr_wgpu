@@ -2,7 +2,7 @@
 # Architecture
 Major optimizations and design decisions are outlined in the sections below. This highlights major techniques without focusing on specific implementation details. See the comments in the source code for implementation decisions.
 
-### Loading
+## Loading
 Files are loaded using the code provided by the [ldr_tools](https://github.com/ScanMountGoat/ldr_tools_blender) library used by the [ldr_tools_blender](https://github.com/ScanMountGoat/ldr_tools_blender) addon. This handles parsing LDraw files as well as most of the geometry processing. Parsing of the LDraw files themselves is handled by [weldr](https://github.com/djeedai/weldr).
 
 Processing time for LDraw files is often dominated by the vertex count. Avoiding unecessary work is key for good performance. The main model geometry is loaded using standard resolution primitives and studs without logos. This may change in the future. 
@@ -11,10 +11,23 @@ Duplicate vertices are welded to reduce processing time later. ldr_tools accompl
 
 The geometry for each part is combined to reduce per object overhead. Fewer, larger draw calls tend to perform better than many small draw calls. This also makes it easy to cache geometry by the part name and color. Once the parts for the file are collected, each part can be converted to geometry in parallel to boost performance.
 
-### Caching
-The repetitive nature of LDraw models makes caching a great way to reduce loading times. The scene representation returned by ldr_tools is carefully chosen to minimize the amount of processing. Each of the distinct processing stages can be done in parallel to reduce loading times. ldr_tools caches parsed .ldr and .dat files by filename to avoid processing files from disk more than once. A scene consists of a list of unique part data containing the part name and geometry. This is used for processing bounding information and normals. Subparts and primitives are not cached. Caching subpart geometry would not actually reduce the amount of processing because merging subparts requires applying the subpart transform to each of its vertices. 
+### Caching and Instancing
+Scene Hierarchy:
+- Part
+  - Color
+    - Instance transforms and bounds
+
+Processing:
+1. Recursively load, parse, and collect data from LDraw files using a single thread
+2. Process all part geometries in parallel
+3. Process all color information for each part in parallel
+4. Process all instances for each part and color combination in parallel
+
+The repetitive nature of LDraw models makes caching a great way to reduce loading times. The parsing library weldr caches parsed .ldr and .dat files by filename to avoid processing files from disk more than once. The scene representation returned by ldr_tools is carefully chosen to minimize the amount of processing. The initial step parses the files and collects all the part names, colors, and transforms. This initial step is hard to parallelize since the data is stored in shared lists. Each of the remaining processing stages can be done in parallel to reduce loading times. A scene consists of a list of unique part data containing the part name and geometry. This is used for processing bounding information and normals. Subparts and primitives are not cached. Caching subpart geometry would not actually reduce the amount of processing because merging subparts requires applying the subpart transform to each of its vertices. 
 
 The actual parts placed in the scene are represented using a list of entries where each entry contains the geometry name, the color, and a list of instance transforms. This ensures the color processing is done only once for each unique part and color. Processing for each instance is very cheap and only needs to transform the part's bounding info by the instance transform and calculate offsets into shared geometry buffers. In general, loading times scale more with the number of unique parts and colors in the scene rather than the number of part instances since instances require less processing.
+
+## Rendering
 
 ### Draw Calls
 Modern GPUs are highly effective at processing large amounts of data in parallel. Careful organization of work into draw calls is very important to fully utilize the hardware. Issuing draw calls for each subpart or LDraw primitive creates significant overhead and leads to poor GPU utilization and performance. Merging the scene into a single draw call can be more efficient but makes it difficult to instance parts and modify parts later. 
