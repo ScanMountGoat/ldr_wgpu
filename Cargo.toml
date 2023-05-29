@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.27"
-wgpu = "0.15.1"
+wgpu = "0.16.0"
 winit = "0.28.3"
 ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "4cf07ba" }
 bytemuck = { version = "1.13", features = [ "derive" ] }

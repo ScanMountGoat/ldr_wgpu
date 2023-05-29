@@ -1,5 +1,3 @@
-use std::num::NonZeroU32;
-
 use crate::{COLOR_FORMAT, DEPTH_FORMAT, MSAA_SAMPLES};
 
 pub fn create_output_msaa_view(
@@ -76,7 +74,7 @@ pub fn create_depth_pyramid_texture(
         .map(|mip| {
             depth_texture.create_view(&wgpu::TextureViewDescriptor {
                 base_mip_level: mip,
-                mip_level_count: Some(NonZeroU32::new(1).unwrap()),
+                mip_level_count: Some(1),
                 ..Default::default()
             })
         })

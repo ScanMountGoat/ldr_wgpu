@@ -49,6 +49,7 @@ fn vs_main(
     var out: VertexOutput;
     let position = model.position.xyz;
     out.clip_position = camera.view_projection * model_matrix * vec4<f32>(model.position.xyz, 1.0);
+    out.position = model.position.xyz;
     out.color = unpack_color(model.color);
     // TODO: is this always correct?
     out.normal = (model_matrix * vec4(model.normal.xyz, 0.0)).xyz;
