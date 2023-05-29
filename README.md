@@ -1,5 +1,5 @@
 # ldr_wgpu
-![image](https://user-images.githubusercontent.com/23301691/229853622-1ec21101-1b3d-4ee3-bc37-593f025fe935.png)
+![image](https://github.com/ScanMountGoat/ldr_wgpu/assets/23301691/d103781d-b0fa-4cf0-bc42-8b13ab42a459)
 
 ldr_wgpu is an experimental LDraw renderer targeting modern desktop GPU hardware with an emphasis on performance.
 
