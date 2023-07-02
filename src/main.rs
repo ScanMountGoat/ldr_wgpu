@@ -31,8 +31,9 @@ const MSAA_SAMPLES: u32 = 4;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-// The far plane can be infinity since we use reversed-z.
+const FOV_Y: f32 = 0.5;
 const Z_NEAR: f32 = 0.1;
+// The far plane can be infinity since we use reversed-z.
 const Z_FAR: f32 = f32::INFINITY;
 
 fn depth_stencil_reversed() -> wgpu::DepthStencilState {
@@ -781,6 +782,17 @@ impl State {
                     // Swap XY so that dragging left/right rotates left/right.
                     self.rotation_xyz.x += (delta_y * 0.01) as f32;
                     self.rotation_xyz.y += (delta_x * 0.01) as f32;
+                } else if self.input_state.is_mouse_right_clicked {
+                    let delta_x = position.x - self.input_state.previous_cursor_position.x;
+                    let delta_y = position.y - self.input_state.previous_cursor_position.y;
+
+                    // Translate an equivalent distance in screen space based on the camera.
+                    // The viewport height and vertical field of view define the conversion.
+                    let fac = FOV_Y.sin() * self.translation.z.abs() / self.size.height as f32;
+
+                    // Negate y so that dragging up "drags" the model up.
+                    self.translation.x += delta_x as f32 * fac;
+                    self.translation.y -= delta_y as f32 * fac;
                 }
                 // Always update the position to avoid jumps when moving between clicks.
                 self.input_state.previous_cursor_position = *position;
@@ -928,7 +940,7 @@ fn calculate_camera_data(
         * glam::Mat4::from_rotation_y(rotation.y)
         * axis_correction;
 
-    let projection = glam::Mat4::perspective_infinite_reverse_rh(0.5, aspect, Z_NEAR);
+    let projection = glam::Mat4::perspective_infinite_reverse_rh(FOV_Y, aspect, Z_NEAR);
 
     let view_projection = projection * view;
 
