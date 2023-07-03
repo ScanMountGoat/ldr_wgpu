@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use glam::{Mat4, Vec4Swizzles};
 use ldr_tools::{LDrawColor, LDrawSceneInstanced};
+use log::info;
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
@@ -131,8 +132,8 @@ pub fn load_render_data(
         }
     }
 
-    println!(
-        "Vertices: {}, Indices: {}",
+    info!(
+        "vertices: {}, indices: {}",
         combined_vertices.len(),
         combined_indices.len()
     );

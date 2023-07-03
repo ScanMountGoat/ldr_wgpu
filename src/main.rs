@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
 use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
+use log::{debug, error, info};
 use scene::{draw_indirect, IndirectSceneData};
 use texture::create_depth_pyramid_texture;
 use wgpu::util::DeviceExt;
@@ -152,14 +153,14 @@ impl State {
             })
             .await
             .unwrap();
-        println!("{:#?}", adapter.get_info());
+        debug!("{:#?}", adapter.get_info());
 
         let mut features = wgpu::Features::MULTI_DRAW_INDIRECT
             | wgpu::Features::INDIRECT_FIRST_INSTANCE
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgpu::Features::POLYGON_MODE_LINE;
 
-        println!("{:?}", adapter.features());
+        debug!("{:?}", adapter.features());
 
         // Indirect count isn't supported on metal, so check first.
         let supports_indirect_count = adapter
@@ -225,7 +226,7 @@ impl State {
 
         let start = std::time::Instant::now();
         let render_data = load_render_data(&device, scene, color_table);
-        println!(
+        info!(
             "Load {} parts, {} unique colored parts, and {} unique parts: {:?}",
             render_data.solid.draw_count,
             scene.geometry_world_transforms.len(),
@@ -970,6 +971,13 @@ fn calculate_camera_data(
 }
 
 fn main() {
+    // Ignore most wgpu logs to avoid flooding the console.
+    simple_logger::SimpleLogger::new()
+        .with_level(log::LevelFilter::Warn)
+        .with_module_level("ldr_wgpu", log::LevelFilter::Info)
+        .init()
+        .unwrap();
+
     let args: Vec<_> = std::env::args().collect();
     let ldraw_path = &args[1];
     let path = &args[2];
@@ -986,7 +994,7 @@ fn main() {
         ..Default::default()
     };
     let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
-    println!("Load scene: {:?}", start.elapsed());
+    info!("Load scene: {:?}", start.elapsed());
 
     let color_table = ldr_tools::load_color_table(ldraw_path);
 
@@ -1028,7 +1036,7 @@ fn main() {
             Ok(_) => {}
             Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
             Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-            Err(e) => eprintln!("{e:?}"),
+            Err(e) => error!("{e:?}"),
         },
         Event::MainEventsCleared => {
             window.request_redraw();
