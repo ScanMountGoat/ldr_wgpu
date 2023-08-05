@@ -30,9 +30,14 @@ impl IndexedVertexData {
             .filter_map(|(e, sharp)| sharp.then_some(*e))
             .collect();
 
+        // TODO: triangulate after splitting?
+        // This is necessary to properly handle condlines.
+        // TODO: Move splitting to ldr_tools
         let (positions, position_indices) = split_edges(
             &geometry.positions,
             &geometry.position_indices,
+            &geometry.face_start_indices,
+            &geometry.face_sizes,
             &sharp_edges,
         );
 
