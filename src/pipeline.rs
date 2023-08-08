@@ -43,16 +43,17 @@ pub fn create_pipeline(
                 write_mask: wgpu::ColorWrites::all(),
             })],
         }),
+        // TODO: Culling doesn't always work?
         primitive: if edges {
             wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Line,
                 topology: wgpu::PrimitiveTopology::LineList,
                 ..Default::default()
             }
         } else {
             wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
                 ..Default::default()
             }
         },
