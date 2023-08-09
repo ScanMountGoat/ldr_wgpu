@@ -20,7 +20,6 @@ use crate::{
     texture::{create_depth_texture, create_output_msaa_view},
 };
 
-mod edge_split;
 mod geometry;
 mod normal;
 mod pipeline;
@@ -993,7 +992,7 @@ fn main() {
         stud_type: StudType::HighContrast,
         ..Default::default()
     };
-    let scene = ldr_tools::load_file_instanced(path, ldraw_path, &settings);
+    let scene = ldr_tools::load_file_instanced(path, ldraw_path, &[], &settings);
     info!("Load scene: {:?}", start.elapsed());
 
     let color_table = ldr_tools::load_color_table(ldraw_path);

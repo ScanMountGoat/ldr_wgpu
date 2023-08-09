@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use glam::Vec3;
 use ldr_tools::LDrawColor;
 
-use crate::{edge_split::split_edges, normal::triangle_face_vertex_normals};
+use crate::normal::triangle_face_vertex_normals;
 
 #[derive(Clone)]
 pub struct IndexedVertexData {
@@ -16,33 +16,11 @@ pub struct IndexedVertexData {
 impl IndexedVertexData {
     pub fn from_geometry(geometry: &ldr_tools::LDrawGeometry) -> Self {
         // TODO: Edge colors?
-        // TODO: Don't calculate grainy faces to save geometry?
-
         // TODO: missing color codes?
         // TODO: publicly expose color handling logic in ldr_tools.
         // TODO: handle the case where the face color list is empty?
-
-        // TODO: Should splitting affect edges as well?
-        let sharp_edges: Vec<_> = geometry
-            .edge_position_indices
-            .iter()
-            .zip(geometry.is_edge_sharp.iter())
-            .filter_map(|(e, sharp)| sharp.then_some(*e))
-            .collect();
-
-        // TODO: triangulate after splitting?
-        // This is necessary to properly handle condlines.
-        // TODO: Move splitting to ldr_tools
-        let (positions, position_indices) = split_edges(
-            &geometry.positions,
-            &geometry.position_indices,
-            &geometry.face_start_indices,
-            &geometry.face_sizes,
-            &sharp_edges,
-        );
-
         let (filtered_adjacent_faces, face_vertex_normals) =
-            triangle_face_vertex_normals(&positions, &position_indices);
+            triangle_face_vertex_normals(&geometry.vertices, &geometry.vertex_indices);
 
         // TODO: make this its own function?
         // Reindex the geometry now that all attributes have been calculated.
@@ -52,7 +30,7 @@ impl IndexedVertexData {
         let mut vertex_indices = Vec::new();
         let mut edge_indices = Vec::new();
 
-        for (i, vertex_index) in position_indices.iter().enumerate() {
+        for (i, vertex_index) in geometry.vertex_indices.iter().enumerate() {
             // Assume faces are already triangulated.
             // This means every 3 indices defines a new face.
             let face_index = i / 3;
@@ -64,7 +42,7 @@ impl IndexedVertexData {
             // Each normal is uniquely determined by the set of filtered adjacent faces
             let adjacent_faces = filtered_adjacent_faces[i].clone();
 
-            let vertex_position = positions[*vertex_index as usize];
+            let vertex_position = geometry.vertices[*vertex_index as usize];
 
             // Store separate indices for position and color.
             // TODO: Create a struct for this?
@@ -73,7 +51,7 @@ impl IndexedVertexData {
             let face_vertex_key = VertexKey {
                 position_index: *vertex_index,
                 adjacent_faces,
-                color: face_color.color,
+                color: *face_color,
             };
 
             let vertex_normal = face_vertex_normals[i];
@@ -85,7 +63,7 @@ impl IndexedVertexData {
                 face_vertex_key,
                 vertex_position,
                 vertex_normal,
-                face_color.color,
+                *face_color,
                 &mut vertex_cache,
                 &mut vertices,
             );
@@ -96,44 +74,37 @@ impl IndexedVertexData {
         // This ensures the sharp edge indices reference the correct vertices.
         // TODO: This color specific indexing probably won't work for normals.
         // TODO: Just create a separate vertex buffer without normals.
-        edge_indices.extend(
-            geometry
-                .edge_position_indices
-                .iter()
-                .zip(geometry.is_edge_sharp.iter())
-                .filter(|(_, sharp)| **sharp)
-                .flat_map(|([v0, v1], _)| {
-                    // Assume all black edges for now.
-                    let i0 = insert_vertex(
-                        VertexKey {
-                            position_index: *v0,
-                            adjacent_faces: BTreeSet::new(),
-                            color: 0,
-                        },
-                        geometry.positions[*v0 as usize],
-                        Vec3::ZERO,
-                        0xFF000000,
-                        &mut vertex_cache,
-                        &mut vertices,
-                    );
-                    let i1 = insert_vertex(
-                        VertexKey {
-                            position_index: *v1,
-                            adjacent_faces: BTreeSet::new(),
-                            color: 0,
-                        },
-                        geometry.positions[*v1 as usize],
-                        Vec3::ZERO,
-                        0xFF000000,
-                        &mut vertex_cache,
-                        &mut vertices,
-                    );
+        edge_indices.extend(geometry.edge_line_indices.iter().flat_map(|[v0, v1]| {
+            // Assume all black edges for now.
+            let i0 = insert_vertex(
+                VertexKey {
+                    position_index: *v0,
+                    adjacent_faces: BTreeSet::new(),
+                    color: 0,
+                },
+                geometry.vertices[*v0 as usize],
+                Vec3::ZERO,
+                0xFF000000,
+                &mut vertex_cache,
+                &mut vertices,
+            );
+            let i1 = insert_vertex(
+                VertexKey {
+                    position_index: *v1,
+                    adjacent_faces: BTreeSet::new(),
+                    color: 0,
+                },
+                geometry.vertices[*v1 as usize],
+                Vec3::ZERO,
+                0xFF000000,
+                &mut vertex_cache,
+                &mut vertices,
+            );
 
-                    [i0, i1]
-                }),
-        );
+            [i0, i1]
+        }));
 
-        let bounds = calculate_bounds(&geometry.positions);
+        let bounds = calculate_bounds(&geometry.vertices);
 
         Self {
             vertices,
