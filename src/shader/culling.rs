@@ -64,7 +64,9 @@ const _: () = assert!(
     "offset of InstanceBounds.max_xyz does not match WGSL"
 );
 pub mod bind_groups {
+    #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);
+    #[derive(Debug)]
     pub struct BindGroupLayout0<'a> {
         pub camera: wgpu::BufferBinding<'a>,
         pub depth_pyramid: &'a wgpu::TextureView,
@@ -140,7 +142,9 @@ pub mod bind_groups {
             render_pass.set_bind_group(0, &self.0, &[]);
         }
     }
+    #[derive(Debug)]
     pub struct BindGroup1(wgpu::BindGroup);
+    #[derive(Debug)]
     pub struct BindGroupLayout1<'a> {
         pub instance_bounds: wgpu::BufferBinding<'a>,
         pub visibility: wgpu::BufferBinding<'a>,
@@ -243,17 +247,25 @@ pub mod bind_groups {
             render_pass.set_bind_group(1, &self.0, &[]);
         }
     }
+    #[derive(Debug, Copy, Clone)]
     pub struct BindGroups<'a> {
         pub bind_group0: &'a BindGroup0,
         pub bind_group1: &'a BindGroup1,
     }
-    pub fn set_bind_groups<'a>(
-        pass: &mut wgpu::ComputePass<'a>,
-        bind_groups: BindGroups<'a>,
-    ) {
-        bind_groups.bind_group0.set(pass);
-        bind_groups.bind_group1.set(pass);
+    impl<'a> BindGroups<'a> {
+        pub fn set(&self, pass: &mut wgpu::ComputePass<'a>) {
+            self.bind_group0.set(pass);
+            self.bind_group1.set(pass);
+        }
     }
+}
+pub fn set_bind_groups<'a>(
+    pass: &mut wgpu::ComputePass<'a>,
+    bind_group0: &'a bind_groups::BindGroup0,
+    bind_group1: &'a bind_groups::BindGroup1,
+) {
+    bind_group0.set(pass);
+    bind_group1.set(pass);
 }
 pub mod compute {
     pub const MAIN_WORKGROUP_SIZE: [u32; 3] = [256, 1, 1];

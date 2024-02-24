@@ -10,7 +10,8 @@ use wgpu::util::DeviceExt;
 use winit::{
     dpi::PhysicalPosition,
     event::*,
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::EventLoop,
+    keyboard::NamedKey,
     window::{Window, WindowBuilder},
 };
 
@@ -51,7 +52,7 @@ fn depth_op_reversed() -> wgpu::Operations<f32> {
     wgpu::Operations {
         // Clear to 0 for reversed z.
         load: wgpu::LoadOp::Clear(0.0),
-        store: true,
+        store: wgpu::StoreOp::Store,
     }
 }
 
@@ -71,8 +72,8 @@ struct ScanBindGroups {
     add_sums: shader::scan_add::bind_groups::BindGroup0,
 }
 
-struct State {
-    surface: wgpu::Surface,
+struct State<'w> {
+    surface: wgpu::Surface<'w>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     size: winit::dpi::PhysicalSize<u32>,
@@ -133,9 +134,9 @@ struct InputState {
     previous_cursor_position: PhysicalPosition<f64>,
 }
 
-impl State {
+impl<'w> State<'w> {
     async fn new(
-        window: &Window,
+        window: &'w Window,
         scene: &LDrawSceneInstanced,
         color_table: &HashMap<u32, LDrawColor>,
     ) -> Self {
@@ -143,7 +144,7 @@ impl State {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let surface = unsafe { instance.create_surface(window).unwrap() };
+        let surface = instance.create_surface(window).unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -154,10 +155,11 @@ impl State {
             .unwrap();
         debug!("{:#?}", adapter.get_info());
 
-        let mut features = wgpu::Features::MULTI_DRAW_INDIRECT
+        let mut required_features = wgpu::Features::MULTI_DRAW_INDIRECT
             | wgpu::Features::INDIRECT_FIRST_INSTANCE
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            | wgpu::Features::POLYGON_MODE_LINE;
+            | wgpu::Features::POLYGON_MODE_LINE
+            | wgpu::Features::FLOAT32_FILTERABLE;
 
         debug!("{:?}", adapter.features());
 
@@ -166,15 +168,15 @@ impl State {
             .features()
             .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
         if supports_indirect_count {
-            features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+            required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
         }
 
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features,
-                    limits: wgpu::Limits::default(),
+                    required_features,
+                    required_limits: wgpu::Limits::default(),
                 },
                 None,
             )
@@ -190,6 +192,7 @@ impl State {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: Vec::new(),
+            desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
@@ -536,7 +539,7 @@ impl State {
                     } else {
                         wgpu::LoadOp::Load
                     },
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -546,19 +549,16 @@ impl State {
                 } else {
                     wgpu::Operations {
                         load: wgpu::LoadOp::Load,
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     }
                 }),
                 stencil_ops: None,
             }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
         });
 
-        shader::model::bind_groups::set_bind_groups(
-            &mut render_pass,
-            shader::model::bind_groups::BindGroups {
-                bind_group0: &self.bind_group0,
-            },
-        );
+        shader::model::set_bind_groups(&mut render_pass, &self.bind_group0);
 
         render_pass.set_pipeline(&self.model_pipeline);
         draw_indirect(
@@ -602,15 +602,14 @@ impl State {
     fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Occlusion Culling Pass"),
+            timestamp_writes: None,
         });
 
         compute_pass.set_pipeline(&self.culling_pipeline);
-        shader::culling::bind_groups::set_bind_groups(
+        shader::culling::set_bind_groups(
             &mut compute_pass,
-            shader::culling::bind_groups::BindGroups {
-                bind_group0: &self.culling_bind_group0,
-                bind_group1: &self.culling_bind_group1,
-            },
+            &self.culling_bind_group0,
+            &self.culling_bind_group1,
         );
 
         // Assume the workgroup is 1D.
@@ -622,6 +621,7 @@ impl State {
     fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder, newly_visible: bool) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Set Visibility Pass"),
+            timestamp_writes: None,
         });
 
         if newly_visible {
@@ -652,10 +652,7 @@ impl State {
         bind_group0: &'a shader::visibility::bind_groups::BindGroup0,
     ) {
         compute_pass.set_pipeline(&self.visibility_pipeline);
-        shader::visibility::bind_groups::set_bind_groups(
-            compute_pass,
-            shader::visibility::bind_groups::BindGroups { bind_group0 },
-        );
+        shader::visibility::set_bind_groups(compute_pass, bind_group0);
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::visibility::compute::MAIN_WORKGROUP_SIZE;
@@ -669,10 +666,7 @@ impl State {
         bind_group0: &'a shader::scan_add::bind_groups::BindGroup0,
     ) {
         compute_pass.set_pipeline(&self.scan_add_pipeline);
-        shader::scan_add::bind_groups::set_bind_groups(
-            compute_pass,
-            shader::scan_add::bind_groups::BindGroups { bind_group0 },
-        );
+        shader::scan_add::set_bind_groups(compute_pass, bind_group0);
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan_add::compute::MAIN_WORKGROUP_SIZE;
@@ -686,10 +680,7 @@ impl State {
         bind_group0: &'a shader::scan::bind_groups::BindGroup0,
     ) {
         compute_pass.set_pipeline(&self.scan_pipeline);
-        shader::scan::bind_groups::set_bind_groups(
-            compute_pass,
-            shader::scan::bind_groups::BindGroups { bind_group0 },
-        );
+        shader::scan::set_bind_groups(compute_pass, bind_group0);
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan::compute::MAIN_WORKGROUP_SIZE;
@@ -700,16 +691,12 @@ impl State {
     fn depth_pyramid_pass(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Depth Pyramid Pass"),
+            timestamp_writes: None,
         });
 
         // Copy the base level.
         compute_pass.set_pipeline(&self.blit_depth_pipeline);
-        shader::blit_depth::bind_groups::set_bind_groups(
-            &mut compute_pass,
-            shader::blit_depth::bind_groups::BindGroups {
-                bind_group0: &self.depth_pyramid.base_bind_group,
-            },
-        );
+        shader::blit_depth::set_bind_groups(&mut compute_pass, &self.depth_pyramid.base_bind_group);
 
         // Assume the workgroup is 2D.
         let [size_x, size_y, _] = shader::blit_depth::compute::MAIN_WORKGROUP_SIZE;
@@ -727,10 +714,7 @@ impl State {
             let mip_width = (self.depth_pyramid.width >> mip).max(1);
             let mip_height = (self.depth_pyramid.height >> mip).max(1);
 
-            shader::depth_pyramid::bind_groups::set_bind_groups(
-                &mut compute_pass,
-                shader::depth_pyramid::bind_groups::BindGroups { bind_group0 },
-            );
+            shader::depth_pyramid::set_bind_groups(&mut compute_pass, bind_group0);
 
             // Assume the workgroup is 2D.
             let [size_x, size_y, _] = shader::depth_pyramid::compute::MAIN_WORKGROUP_SIZE;
@@ -744,18 +728,7 @@ impl State {
     // Make this a reusable library that only requires glam?
     fn handle_input(&mut self, event: &WindowEvent) {
         match event {
-            WindowEvent::KeyboardInput { input, .. } => {
-                // Basic camera controls using arrow keys.
-                if let Some(keycode) = input.virtual_keycode {
-                    match keycode {
-                        VirtualKeyCode::Left => self.translation.x += 1.0,
-                        VirtualKeyCode::Right => self.translation.x -= 1.0,
-                        VirtualKeyCode::Up => self.translation.y -= 1.0,
-                        VirtualKeyCode::Down => self.translation.y += 1.0,
-                        _ => (),
-                    }
-                }
-            }
+            WindowEvent::KeyboardInput { .. } => {}
             WindowEvent::MouseInput { button, state, .. } => {
                 // Track mouse clicks to only rotate when dragging while clicked.
                 match (button, state) {
@@ -985,6 +958,7 @@ fn main() {
     // https://www.khronos.org/opengl/wiki/Post_Transform_Cache
     // https://arbook.icg.tugraz.at/schmalstieg/Schmalstieg_351.pdf
     // TODO: Is it worth applying a more optimal vertex ordering?
+    // TODO: test with https://crates.io/crates/meshopt
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,
@@ -997,49 +971,42 @@ fn main() {
 
     let color_table = ldr_tools::load_color_table(ldraw_path);
 
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
         .with_title(concat!("ldr_wgpu ", env!("CARGO_PKG_VERSION")))
         .build(&event_loop)
         .unwrap();
 
     let mut state = block_on(State::new(&window, &scene, &color_table));
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == window.id() => match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        ..
-                    },
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(physical_size) => {
-                state.resize(*physical_size);
-                state.update_camera(*physical_size);
-            }
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                state.resize(**new_inner_size);
-            }
-            _ => {
-                state.handle_input(event);
-                state.update_camera(window.inner_size());
-            }
-        },
-        Event::RedrawRequested(_) => match state.render() {
-            Ok(_) => {}
-            Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-            Err(wgpu::SurfaceError::OutOfMemory) => *control_flow = ControlFlow::Exit,
-            Err(e) => error!("{e:?}"),
-        },
-        Event::MainEventsCleared => {
-            window.request_redraw();
-        }
-        _ => (),
-    });
+    event_loop
+        .run(|event, target| match event {
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() => match event {
+                WindowEvent::CloseRequested => target.exit(),
+                WindowEvent::Resized(physical_size) => {
+                    state.resize(*physical_size);
+                    state.update_camera(*physical_size);
+                    window.request_redraw();
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {}
+                WindowEvent::RedrawRequested => {
+                    match state.render() {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                        Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
+                        Err(e) => error!("{e:?}"),
+                    }
+                    window.request_redraw();
+                }
+                _ => {
+                    state.handle_input(event);
+                    state.update_camera(window.inner_size());
+                    window.request_redraw();
+                }
+            },
+            _ => (),
+        })
+        .unwrap();
 }

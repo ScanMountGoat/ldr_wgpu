@@ -33,7 +33,9 @@ pub struct InstanceInput {
     pub model_matrix_3: glam::Vec4,
 }
 pub mod bind_groups {
+    #[derive(Debug)]
     pub struct BindGroup0(wgpu::BindGroup);
+    #[derive(Debug)]
     pub struct BindGroupLayout0<'a> {
         pub camera: wgpu::BufferBinding<'a>,
     }
@@ -77,86 +79,87 @@ pub mod bind_groups {
             render_pass.set_bind_group(0, &self.0, &[]);
         }
     }
+    #[derive(Debug, Copy, Clone)]
     pub struct BindGroups<'a> {
         pub bind_group0: &'a BindGroup0,
     }
-    pub fn set_bind_groups<'a>(
-        pass: &mut wgpu::RenderPass<'a>,
-        bind_groups: BindGroups<'a>,
-    ) {
-        bind_groups.bind_group0.set(pass);
-    }
-}
-pub mod vertex {
-    impl super::VertexInput {
-        pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: memoffset::offset_of!(super::VertexInput, position) as u64,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Uint32,
-                offset: memoffset::offset_of!(super::VertexInput, color) as u64,
-                shader_location: 1,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: memoffset::offset_of!(super::VertexInput, normal) as u64,
-                shader_location: 2,
-            },
-        ];
-        pub const fn vertex_buffer_layout(
-            step_mode: wgpu::VertexStepMode,
-        ) -> wgpu::VertexBufferLayout<'static> {
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<super::VertexInput>() as u64,
-                step_mode,
-                attributes: &super::VertexInput::VERTEX_ATTRIBUTES,
-            }
+    impl<'a> BindGroups<'a> {
+        pub fn set(&self, pass: &mut wgpu::RenderPass<'a>) {
+            self.bind_group0.set(pass);
         }
     }
-    impl super::InstanceInput {
-        pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_0)
-                    as u64,
-                shader_location: 3,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_1)
-                    as u64,
-                shader_location: 4,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_2)
-                    as u64,
-                shader_location: 5,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: memoffset::offset_of!(super::InstanceInput, model_matrix_3)
-                    as u64,
-                shader_location: 6,
-            },
-        ];
-        pub const fn vertex_buffer_layout(
-            step_mode: wgpu::VertexStepMode,
-        ) -> wgpu::VertexBufferLayout<'static> {
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<super::InstanceInput>() as u64,
-                step_mode,
-                attributes: &super::InstanceInput::VERTEX_ATTRIBUTES,
-            }
+}
+pub fn set_bind_groups<'a>(
+    pass: &mut wgpu::RenderPass<'a>,
+    bind_group0: &'a bind_groups::BindGroup0,
+) {
+    bind_group0.set(pass);
+}
+impl VertexInput {
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: memoffset::offset_of!(VertexInput, position) as u64,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Uint32,
+            offset: memoffset::offset_of!(VertexInput, color) as u64,
+            shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: memoffset::offset_of!(VertexInput, normal) as u64,
+            shader_location: 2,
+        },
+    ];
+    pub const fn vertex_buffer_layout(
+        step_mode: wgpu::VertexStepMode,
+    ) -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexInput>() as u64,
+            step_mode,
+            attributes: &VertexInput::VERTEX_ATTRIBUTES,
+        }
+    }
+}
+impl InstanceInput {
+    pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: memoffset::offset_of!(InstanceInput, model_matrix_0) as u64,
+            shader_location: 3,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: memoffset::offset_of!(InstanceInput, model_matrix_1) as u64,
+            shader_location: 4,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: memoffset::offset_of!(InstanceInput, model_matrix_2) as u64,
+            shader_location: 5,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: memoffset::offset_of!(InstanceInput, model_matrix_3) as u64,
+            shader_location: 6,
+        },
+    ];
+    pub const fn vertex_buffer_layout(
+        step_mode: wgpu::VertexStepMode,
+    ) -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceInput>() as u64,
+            step_mode,
+            attributes: &InstanceInput::VERTEX_ATTRIBUTES,
         }
     }
 }
 pub const ENTRY_VS_MAIN: &str = "vs_main";
 pub const ENTRY_FS_MAIN: &str = "fs_main";
 pub const ENTRY_FS_EDGE_MAIN: &str = "fs_edge_main";
+#[derive(Debug)]
 pub struct VertexEntry<const N: usize> {
     entry_point: &'static str,
     buffers: [wgpu::VertexBufferLayout<'static>; N],

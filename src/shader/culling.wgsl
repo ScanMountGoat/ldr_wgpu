@@ -42,14 +42,14 @@ var<storage, read> transparent: array<u32>;
 
 fn is_within_view_frustum(center: vec3<f32>, radius: f32) -> bool {
 	// Cull objects completely outside the viewing frustum.
-	if (center.z * camera.frustum.y - abs(center.x) * camera.frustum.x < -radius) {
+    if center.z * camera.frustum.y - abs(center.x) * camera.frustum.x < -radius {
         return false;
     }
-    if (center.z * camera.frustum.w - abs(center.y) * camera.frustum.z < -radius) {
+    if center.z * camera.frustum.w - abs(center.y) * camera.frustum.z < -radius {
         return false;
     }
 
-	return true;
+    return true;
 }
 
 fn world_to_coords(position: vec3<f32>) -> vec3<f32> {
@@ -77,27 +77,27 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
         world_to_coords(max_xyz),
     );
 
-    var min_xyz = min(aabb_corners[0], aabb_corners[1]);
-    min_xyz = min(min_xyz, aabb_corners[2]);
-    min_xyz = min(min_xyz, aabb_corners[3]);
-    min_xyz = min(min_xyz, aabb_corners[4]);
-    min_xyz = min(min_xyz, aabb_corners[5]);
-    min_xyz = min(min_xyz, aabb_corners[6]);
-    min_xyz = min(min_xyz, aabb_corners[7]);
+    var min_xyz_final = min(aabb_corners[0], aabb_corners[1]);
+    min_xyz_final = min(min_xyz_final, aabb_corners[2]);
+    min_xyz_final = min(min_xyz_final, aabb_corners[3]);
+    min_xyz_final = min(min_xyz_final, aabb_corners[4]);
+    min_xyz_final = min(min_xyz_final, aabb_corners[5]);
+    min_xyz_final = min(min_xyz_final, aabb_corners[6]);
+    min_xyz_final = min(min_xyz_final, aabb_corners[7]);
 
-    var max_xyz = max(aabb_corners[0], aabb_corners[1]);
-    max_xyz = max(max_xyz, aabb_corners[2]);
-    max_xyz = max(max_xyz, aabb_corners[3]);
-    max_xyz = max(max_xyz, aabb_corners[4]);
-    max_xyz = max(max_xyz, aabb_corners[5]);
-    max_xyz = max(max_xyz, aabb_corners[6]);
-    max_xyz = max(max_xyz, aabb_corners[7]);
+    var max_xyz_final = max(aabb_corners[0], aabb_corners[1]);
+    max_xyz_final = max(max_xyz_final, aabb_corners[2]);
+    max_xyz_final = max(max_xyz_final, aabb_corners[3]);
+    max_xyz_final = max(max_xyz_final, aabb_corners[4]);
+    max_xyz_final = max(max_xyz_final, aabb_corners[5]);
+    max_xyz_final = max(max_xyz_final, aabb_corners[6]);
+    max_xyz_final = max(max_xyz_final, aabb_corners[7]);
 
     // An axis-aligned bounding box in screen space.
-    let aabb = vec4(min_xyz.xy, max_xyz.xy);
+    let aabb = vec4(min_xyz_final.xy, max_xyz_final.xy);
 
     // Calculate the covered area in pixels for the base mip level.
-    let aabb_size = max_xyz.xy - min_xyz.xy;
+    let aabb_size = max_xyz_final.xy - min_xyz_final.xy;
     let aabb_size_base_level = aabb_size * vec2<f32>(textureDimensions(depth_pyramid, 0));
 
     // Calculate the mip level that will be covered by at most 2x2 pixels.
@@ -119,18 +119,18 @@ fn is_occluded(min_xyz: vec3<f32>, max_xyz: vec3<f32>) -> bool {
     // Check if the closest depth of the object exceeds the farthest occluder depth.
     // This means the object is definitely occluded.
     // The comparisons are reversed since we use a reversed-z buffer.
-    let closest_depth = max_xyz.z;
+    let closest_depth = max_xyz_final.z;
     return closest_depth < farthest_occluder_depth;
 }
 
 fn is_visible(index: u32) -> bool {
     // Bounding spheres for frustum culling.
-	let bounding_sphere = instance_bounds[index].sphere;
+    let bounding_sphere = instance_bounds[index].sphere;
     let center_view = (camera.view * vec4(bounding_sphere.xyz, 1.0)).xyz;
     // Assume no scaling in the view matrix.
     let radius = bounding_sphere.w;
 
-    if (!is_within_view_frustum(center_view, radius)) {
+    if !is_within_view_frustum(center_view, radius) {
         return false;
     }
 
@@ -139,7 +139,7 @@ fn is_visible(index: u32) -> bool {
     let max_xyz = instance_bounds[index].max_xyz.xyz;
 
     // Use the existing state for visibility.
-    if (is_occluded(min_xyz, max_xyz)) {
+    if is_occluded(min_xyz, max_xyz) {
         return false;
     }
 
@@ -151,7 +151,7 @@ fn is_visible(index: u32) -> bool {
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Assume all the arrays have the same length.
     let index = global_id.x;
-    if (index >= arrayLength(&visibility)) {
+    if index >= arrayLength(&visibility) {
         return;
     }
 
@@ -162,7 +162,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Transparent objects should never be in the previously visible pass.
     // This prevents transparent objects occluding other objects.
     let is_transparent = transparent[index] != 0u;
-    if (visible && !is_transparent) {
+    if visible && !is_transparent {
         visibility[index] = 1u;
     } else {
         visibility[index] = 0u;
@@ -170,7 +170,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Also track objects visible this frame but not last frame
     // Also drawing these objects makes the culling conservative.
-    if (visible && !previously_visible) {
+    if visible && !previously_visible {
         new_visibility[index] = 1u;
     } else {
         new_visibility[index] = 0u;

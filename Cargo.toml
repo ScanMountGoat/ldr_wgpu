@@ -5,11 +5,11 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.27"
-wgpu = "0.16.0"
-winit = "0.28.3"
-ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "d8d9a43" }
+wgpu = "0.19.0"
+winit = { version = "0.29.4", features = ["rwh_05"] }
+ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "e104ff0" }
 bytemuck = { version = "1.13", features = [ "derive" ] }
-glam = { version = "0.23.0", features = ["bytemuck"] }
+glam = { version = "0.25.0", features = ["bytemuck"] }
 memoffset = "0.8.0"
 futures-intrusive = "0.5.0"
 rayon = "1.7.0"
@@ -17,4 +17,4 @@ simple_logger = "4.2.0"
 log = "0.4.19"
 
 [build-dependencies]
-wgsl_to_wgpu = "0.4.1"
+wgsl_to_wgpu = "0.6.0"
