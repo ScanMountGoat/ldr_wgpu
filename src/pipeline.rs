@@ -42,6 +42,7 @@ pub fn create_pipeline(
                 }),
                 write_mask: wgpu::ColorWrites::all(),
             })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         // TODO: Culling doesn't always work?
         primitive: if edges {

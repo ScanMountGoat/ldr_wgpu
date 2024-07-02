@@ -8,6 +8,7 @@ Files are loaded using the code provided by the [ldr_tools](https://github.com/S
 Processing time for LDraw files is often dominated by the vertex count. Avoiding unecessary work is key for good performance. The main model geometry is loaded using standard resolution primitives and studs without logos. This may change in the future. 
 
 Duplicate vertices are welded to reduce processing time later. ldr_tools accomplishes this using an [R-tree](https://en.wikipedia.org/wiki/R-tree) and a distance threshold. This outperforms a naive nested for loop for removing duplicates and avoids issues with hashing floating point numbers.
+Vertex indices are reordered using meshopt to reduce vertex shader invocations by taking advantage of [batching on modern GPUs](https://arbook.icg.tugraz.at/schmalstieg/Schmalstieg_351.pdf).
 
 The geometry for each part is combined to reduce per object overhead. Fewer, larger draw calls tend to perform better than many small draw calls. This also makes it easy to cache geometry by the part name and color. Once the parts for the file are collected, each part can be converted to geometry in parallel to boost performance.
 

@@ -11,7 +11,6 @@ use winit::{
     dpi::PhysicalPosition,
     event::*,
     event_loop::EventLoop,
-    keyboard::NamedKey,
     window::{Window, WindowBuilder},
 };
 
@@ -206,7 +205,7 @@ impl<'w> State<'w> {
         let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(&device);
         let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(&device);
 
-        let translation = vec3(0.0, -0.5, -20.0);
+        let translation = vec3(0.0, -0.5, -200.0);
         let rotation_xyz = Vec3::ZERO;
         let camera_data = calculate_camera_data(size, translation, rotation_xyz);
 
@@ -955,10 +954,6 @@ fn main() {
     let path = &args[2];
 
     // Weld vertices to take advantage of vertex caching/batching on the GPU.
-    // https://www.khronos.org/opengl/wiki/Post_Transform_Cache
-    // https://arbook.icg.tugraz.at/schmalstieg/Schmalstieg_351.pdf
-    // TODO: Is it worth applying a more optimal vertex ordering?
-    // TODO: test with https://crates.io/crates/meshopt
     let start = std::time::Instant::now();
     let settings = GeometrySettings {
         triangulate: true,

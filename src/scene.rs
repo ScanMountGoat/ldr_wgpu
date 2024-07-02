@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec4Swizzles};
 use ldr_tools::{LDrawColor, LDrawSceneInstanced};
 use log::info;
+use meshopt::optimize_vertex_cache;
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
@@ -88,8 +89,14 @@ pub fn load_render_data(
         let mut vertex_data = part_vertex_data[name].clone();
         vertex_data.replace_colors(*color, color_table);
 
+        // Modern GPUs reuse indices in small batches.
+        // This also helps slightly on Apple M1.
+        // https://arbook.icg.tugraz.at/schmalstieg/Schmalstieg_351.pdf
+        let vertex_indices =
+            optimize_vertex_cache(&vertex_data.vertex_indices, vertex_data.vertices.len());
+
         combined_vertices.extend_from_slice(&vertex_data.vertices);
-        combined_indices.extend_from_slice(&vertex_data.vertex_indices);
+        combined_indices.extend_from_slice(&vertex_indices);
         combined_edge_indices.extend_from_slice(&vertex_data.edge_indices);
 
         let is_transparent = color_table
