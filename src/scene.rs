@@ -77,7 +77,7 @@ pub fn load_render_data(
         .collect();
 
     // TODO: perform these conversions in parallel?
-    // TODO: Parellelizing this will require scanning the sizes to calculate buffer offsets.
+    // TODO: Parallelizing this will require scanning the sizes to calculate buffer offsets.
     for ((name, color), transforms) in alpha_sorted {
         let base_index = combined_indices.len() as u32;
         let base_edge_index = combined_edge_indices.len() as u32;
