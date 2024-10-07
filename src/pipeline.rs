@@ -64,5 +64,6 @@ pub fn create_pipeline(
             ..Default::default()
         },
         multiview: None,
+        cache: None,
     })
 }

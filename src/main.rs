@@ -176,6 +176,7 @@ impl<'w> State<'w> {
                     label: None,
                     required_features,
                     required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::default()
                 },
                 None,
             )
