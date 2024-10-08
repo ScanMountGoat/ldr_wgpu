@@ -100,11 +100,15 @@ fn main() {
         supported_features,
     );
 
+    let start = std::time::Instant::now();
+
     globwalk::GlobWalkerBuilder::from_patterns(input_folder, &["*.{dat}"])
+        .max_depth(1)
         .build()
         .unwrap()
         .for_each(|entry| {
             let path = entry.as_ref().unwrap().path();
+            println!("{path:?}");
 
             let start = std::time::Instant::now();
             let scene =
@@ -137,6 +141,8 @@ fn main() {
             queue.submit(std::iter::empty());
             device.poll(wgpu::Maintain::Wait);
         });
+
+    println!("{:?}", start.elapsed());
 }
 
 fn save_screenshot(
