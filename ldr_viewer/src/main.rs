@@ -16,7 +16,7 @@ struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    async fn new(window: &'a Window) -> Self {
+    async fn new(window: &'a Window, format: wgpu::TextureFormat) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -51,7 +51,7 @@ impl<'a> State<'a> {
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: ldr_wgpu::COLOR_FORMAT,
+            format,
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
@@ -89,12 +89,17 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = block_on(State::new(&window));
+    // Choose a format that's guaranteed to be supported.
+    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
 
+    let mut state = block_on(State::new(&window, format));
+
+    let size = window.inner_size();
     let mut renderer = ldr_wgpu::Renderer::new(
         &state.device,
-        &state.queue,
-        window.inner_size(),
+        size.width,
+        size.height,
+        format,
         state.required_features,
     );
 
@@ -120,13 +125,13 @@ fn main() {
                 window_id,
             } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => target.exit(),
-                WindowEvent::Resized(new_size) => {
-                    state.config.width = new_size.width;
-                    state.config.height = new_size.height;
+                WindowEvent::Resized(size) => {
+                    state.config.width = size.width;
+                    state.config.height = size.height;
                     state.surface.configure(&state.device, &state.config);
 
-                    renderer.resize(&state.device, &state.queue, *new_size);
-                    renderer.update_camera(&state.queue, *new_size);
+                    renderer.resize(&state.device, size.width, size.height, format);
+                    renderer.update_camera(&state.queue, size.width, size.height);
                     window.request_redraw();
                 }
                 WindowEvent::ScaleFactorChanged { .. } => {}
@@ -146,7 +151,8 @@ fn main() {
                             output.present();
                         }
                         Err(wgpu::SurfaceError::Lost) => {
-                            renderer.resize(&state.device, &state.queue, window.inner_size())
+                            let size = window.inner_size();
+                            renderer.resize(&state.device, size.width, size.height, format)
                         }
                         Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
                         Err(e) => error!("{e:?}"),
@@ -154,8 +160,9 @@ fn main() {
                     window.request_redraw();
                 }
                 _ => {
-                    renderer.handle_input(event, window.inner_size());
-                    renderer.update_camera(&state.queue, window.inner_size());
+                    let size = window.inner_size();
+                    renderer.handle_input(event, size);
+                    renderer.update_camera(&state.queue, size.width, size.height);
                     window.request_redraw();
                 }
             },

@@ -46,18 +46,19 @@ fn main() {
     ))
     .unwrap();
 
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+
     let size = wgpu::Extent3d {
         width: WIDTH,
         height: HEIGHT,
         depth_or_array_layers: 1,
     };
-    // TODO: make the output format configurable.
     let texture_desc = wgpu::TextureDescriptor {
         size,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: ldr_wgpu::COLOR_FORMAT,
+        format,
         usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
         label: None,
         view_formats: &[],
@@ -82,15 +83,7 @@ fn main() {
 
     let color_table = ldr_tools::load_color_table(ldraw_path);
 
-    let mut renderer = ldr_wgpu::Renderer::new(
-        &device,
-        &queue,
-        winit::dpi::PhysicalSize {
-            width: WIDTH,
-            height: HEIGHT,
-        },
-        supported_features,
-    );
+    let mut renderer = ldr_wgpu::Renderer::new(&device, WIDTH, HEIGHT, format, supported_features);
 
     globwalk::GlobWalkerBuilder::from_patterns(input_folder, &["*.{dat}"])
         .build()

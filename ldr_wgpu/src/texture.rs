@@ -1,9 +1,10 @@
-use crate::{COLOR_FORMAT, DEPTH_FORMAT, MSAA_SAMPLES};
+use crate::{DEPTH_FORMAT, MSAA_SAMPLES};
 
 pub fn create_output_msaa_view(
     device: &wgpu::Device,
     width: u32,
     height: u32,
+    format: wgpu::TextureFormat,
 ) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("output msaa texture"),
@@ -15,7 +16,7 @@ pub fn create_output_msaa_view(
         mip_level_count: 1,
         sample_count: MSAA_SAMPLES,
         dimension: wgpu::TextureDimension::D2,
-        format: COLOR_FORMAT,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

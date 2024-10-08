@@ -7,7 +7,7 @@ use log::{debug, info};
 use scene::{draw_indirect, IndirectSceneData};
 use texture::create_depth_pyramid_texture;
 use wgpu::util::DeviceExt;
-use winit::{dpi::PhysicalPosition, event::*, window::Window};
+use winit::{dpi::PhysicalPosition, event::*};
 
 use crate::{
     pipeline::*,
@@ -23,7 +23,6 @@ mod shader;
 mod texture;
 
 const MSAA_SAMPLES: u32 = 4;
-pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 const FOV_Y: f32 = 0.5;
@@ -132,7 +131,7 @@ impl RenderData {
         color_table: &HashMap<u32, LDrawColor>,
     ) -> Self {
         let start = std::time::Instant::now();
-        let render_data = load_render_data(&device, ldraw_scene, color_table);
+        let render_data = load_render_data(device, ldraw_scene, color_table);
         info!(
             "Load {} parts, {} unique colored parts, and {} unique parts: {:?}",
             render_data.solid.draw_count,
@@ -142,7 +141,7 @@ impl RenderData {
         );
 
         let culling_bind_group1 = shader::culling::bind_groups::BindGroup1::from_bindings(
-            &device,
+            device,
             shader::culling::bind_groups::BindGroupLayout1 {
                 instance_bounds: render_data
                     .instance_bounds_buffer
@@ -154,7 +153,7 @@ impl RenderData {
         );
 
         let visible_bind_group = shader::visibility::bind_groups::BindGroup0::from_bindings(
-            &device,
+            device,
             shader::visibility::bind_groups::BindGroupLayout0 {
                 draws: render_data.solid.indirect_buffer.as_entire_buffer_binding(),
                 edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
@@ -177,7 +176,7 @@ impl RenderData {
         );
 
         let newly_visible_bind_group = shader::visibility::bind_groups::BindGroup0::from_bindings(
-            &device,
+            device,
             shader::visibility::bind_groups::BindGroupLayout0 {
                 draws: render_data.solid.indirect_buffer.as_entire_buffer_binding(),
                 edge_draws: render_data.edges.indirect_buffer.as_entire_buffer_binding(),
@@ -202,13 +201,13 @@ impl RenderData {
         // Create separate inputs for both visible and newly visible passes.
         // Most of the output buffers can be reused.
         let scan_visible = create_scan_bind_groups(
-            &device,
+            device,
             &render_data.visibility_buffer,
             &render_data.scanned_visibility_buffer,
         );
 
         let scan_newly_visible = create_scan_bind_groups(
-            &device,
+            device,
             &render_data.new_visibility_buffer,
             &render_data.scanned_new_visibility_buffer,
         );
@@ -227,8 +226,9 @@ impl RenderData {
 impl Renderer {
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        size: winit::dpi::PhysicalSize<u32>,
+        width: u32,
+        height: u32,
+        output_format: wgpu::TextureFormat,
         supported_features: wgpu::Features,
     ) -> Self {
         let required_features = required_features(supported_features);
@@ -236,19 +236,19 @@ impl Renderer {
             required_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
         debug!("{:?}", required_features);
 
-        let model_pipeline = create_pipeline(&device, COLOR_FORMAT, false);
-        let model_edges_pipeline = create_pipeline(&device, COLOR_FORMAT, true);
+        let model_pipeline = create_pipeline(device, output_format, false);
+        let model_edges_pipeline = create_pipeline(device, output_format, true);
 
-        let visibility_pipeline = shader::visibility::compute::create_main_pipeline(&device);
-        let culling_pipeline = shader::culling::compute::create_main_pipeline(&device);
-        let scan_pipeline = shader::scan::compute::create_main_pipeline(&device);
-        let scan_add_pipeline = shader::scan_add::compute::create_main_pipeline(&device);
-        let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(&device);
-        let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(&device);
+        let visibility_pipeline = shader::visibility::compute::create_main_pipeline(device);
+        let culling_pipeline = shader::culling::compute::create_main_pipeline(device);
+        let scan_pipeline = shader::scan::compute::create_main_pipeline(device);
+        let scan_add_pipeline = shader::scan_add::compute::create_main_pipeline(device);
+        let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(device);
+        let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(device);
 
         let translation = vec3(0.0, -0.5, -200.0);
         let rotation_xyz = Vec3::ZERO;
-        let camera_data = calculate_camera_data(size, translation, rotation_xyz);
+        let camera_data = calculate_camera_data(width, height, translation, rotation_xyz);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera buffer"),
@@ -260,7 +260,7 @@ impl Renderer {
         });
 
         let bind_group0 = shader::model::bind_groups::BindGroup0::from_bindings(
-            &device,
+            device,
             shader::model::bind_groups::BindGroupLayout0 {
                 camera: camera_buffer.as_entire_buffer_binding(),
             },
@@ -281,9 +281,9 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let (depth_texture, depth_view) = create_depth_texture(&device, size.width, size.height);
+        let (depth_texture, depth_view) = create_depth_texture(device, width, height);
 
-        let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
+        let depth_pyramid = create_depth_pyramid(device, width, height, &depth_view);
 
         let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             min_filter: wgpu::FilterMode::Nearest,
@@ -293,7 +293,7 @@ impl Renderer {
         });
 
         let culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
-            &device,
+            device,
             shader::culling::bind_groups::BindGroupLayout0 {
                 camera: camera_culling_buffer.as_entire_buffer_binding(),
                 depth_pyramid: &depth_pyramid.all_mips,
@@ -301,7 +301,7 @@ impl Renderer {
             },
         );
 
-        let output_view_msaa = create_output_msaa_view(&device, size.width, size.height);
+        let output_view_msaa = create_output_msaa_view(device, width, height, output_format);
 
         Self {
             model_pipeline,
@@ -327,8 +327,8 @@ impl Renderer {
         }
     }
 
-    pub fn update_camera(&self, queue: &wgpu::Queue, size: winit::dpi::PhysicalSize<u32>) {
-        let camera_data = calculate_camera_data(size, self.translation, self.rotation_xyz);
+    pub fn update_camera(&self, queue: &wgpu::Queue, width: u32, height: u32) {
+        let camera_data = calculate_camera_data(width, height, self.translation, self.rotation_xyz);
         queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -355,20 +355,19 @@ impl Renderer {
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        new_size: winit::dpi::PhysicalSize<u32>,
+        width: u32,
+        height: u32,
+        output_format: wgpu::TextureFormat,
     ) {
-        if new_size.width > 0 && new_size.height > 0 {
+        if width > 0 && height > 0 {
             // Update each resource that depends on window size.
-            let (depth_texture, depth_view) =
-                create_depth_texture(device, new_size.width, new_size.height);
+            let (depth_texture, depth_view) = create_depth_texture(device, width, height);
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
 
-            self.depth_pyramid = create_depth_pyramid(device, new_size, &self.depth_view);
+            self.depth_pyramid = create_depth_pyramid(device, width, height, &self.depth_view);
 
-            self.output_view_msaa =
-                create_output_msaa_view(device, new_size.width, new_size.height);
+            self.output_view_msaa = create_output_msaa_view(device, width, height, output_format);
 
             let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
                 min_filter: wgpu::FilterMode::Nearest,
@@ -415,7 +414,7 @@ impl Renderer {
             label: Some("Render Encoder"),
         });
 
-        self.set_visibility_pass(&mut encoder, render_data,false);
+        self.set_visibility_pass(&mut encoder, render_data, false);
 
         // The synchronization and copies aren't necessary if indirect count is supported.
         if !self.supports_indirect_count {
@@ -439,12 +438,12 @@ impl Renderer {
         // TODO: Fix high contrast studs (manually add stud files to ldr_tools)
         // TODO: Port right click pan from ssbh_wgpu
         // Draw everything that was visible last frame.
-        self.model_pass(&mut encoder, &output_view, render_data,true);
+        self.model_pass(&mut encoder, output_view, render_data, true);
 
         // Apply culling to set visibility and enable newly visible objects.
         self.depth_pyramid_pass(&mut encoder);
         self.occlusion_culling_pass(&mut encoder, render_data);
-        self.set_visibility_pass(&mut encoder, render_data,true);
+        self.set_visibility_pass(&mut encoder, render_data, true);
 
         if !self.supports_indirect_count {
             // Make sure the staging buffer is set up for the next compaction operation.
@@ -465,7 +464,7 @@ impl Renderer {
         }
 
         // Draw everything that is newly visible in this frame.
-        self.model_pass(&mut encoder, &output_view, render_data, false);
+        self.model_pass(&mut encoder, output_view, render_data, false);
         encoder
     }
 
@@ -570,18 +569,35 @@ impl Renderer {
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
-    fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder, render_data: &RenderData, newly_visible: bool) {
+    fn set_visibility_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        render_data: &RenderData,
+        newly_visible: bool,
+    ) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Set Visibility Pass"),
             timestamp_writes: None,
         });
 
         if newly_visible {
-            self.scan_recursive(&mut compute_pass, &render_data.scan_newly_visible, render_data);
-            self.set_visibility(&mut compute_pass, &render_data.newly_visible_bind_group, render_data);
+            self.scan_recursive(
+                &mut compute_pass,
+                &render_data.scan_newly_visible,
+                render_data,
+            );
+            self.set_visibility(
+                &mut compute_pass,
+                &render_data.newly_visible_bind_group,
+                render_data,
+            );
         } else {
             self.scan_recursive(&mut compute_pass, &render_data.scan_visible, render_data);
-            self.set_visibility(&mut compute_pass, &render_data.visible_bind_group, render_data);
+            self.set_visibility(
+                &mut compute_pass,
+                &render_data.visible_bind_group,
+                render_data,
+            );
         }
     }
 
@@ -589,7 +605,7 @@ impl Renderer {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_groups: &'a ScanBindGroups,
-        render_data: &RenderData
+        render_data: &RenderData,
     ) {
         // Recursively scan to support scanning arrays much larger than a single workgroup.
         self.scan(compute_pass, &bind_groups.scan, render_data);
@@ -603,7 +619,7 @@ impl Renderer {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_group0: &'a shader::visibility::bind_groups::BindGroup0,
-        render_data: &RenderData
+        render_data: &RenderData,
     ) {
         compute_pass.set_pipeline(&self.visibility_pipeline);
         shader::visibility::set_bind_groups(compute_pass, bind_group0);
@@ -618,7 +634,7 @@ impl Renderer {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_group0: &'a shader::scan_add::bind_groups::BindGroup0,
-        render_data: &RenderData
+        render_data: &RenderData,
     ) {
         compute_pass.set_pipeline(&self.scan_add_pipeline);
         shader::scan_add::set_bind_groups(compute_pass, bind_group0);
@@ -633,7 +649,7 @@ impl Renderer {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_group0: &'a shader::scan::bind_groups::BindGroup0,
-        render_data: &RenderData
+        render_data: &RenderData,
     ) {
         compute_pass.set_pipeline(&self.scan_pipeline);
         shader::scan::set_bind_groups(compute_pass, bind_group0);
@@ -817,12 +833,10 @@ fn create_scan_bind_groups(
 
 fn create_depth_pyramid(
     device: &wgpu::Device,
-    window_size: winit::dpi::PhysicalSize<u32>,
+    width: u32,
+    height: u32,
     base_depth_view: &wgpu::TextureView,
 ) -> DepthPyramid {
-    let width = window_size.width;
-    let height = window_size.height;
-
     let (pyramid, pyramid_mips) = create_depth_pyramid_texture(device, width, height);
     let pyramid_bind_groups = depth_pyramid_bind_groups(device, &pyramid_mips);
 
@@ -868,11 +882,12 @@ const fn div_round_up(x: u32, d: u32) -> u32 {
 }
 
 fn calculate_camera_data(
-    size: winit::dpi::PhysicalSize<u32>,
+    width: u32,
+    height: u32,
     translation: glam::Vec3,
     rotation: glam::Vec3,
 ) -> CameraData {
-    let aspect = size.width as f32 / size.height as f32;
+    let aspect = width as f32 / height as f32;
 
     // wgpu and LDraw have different coordinate systems.
     let axis_correction = Mat4::from_rotation_x(180.0f32.to_radians());
