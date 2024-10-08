@@ -2,17 +2,12 @@ use std::collections::HashMap;
 
 use futures::executor::block_on;
 use glam::{vec3, vec4, Mat4, Vec3, Vec4};
-use ldr_tools::{GeometrySettings, LDrawColor, LDrawSceneInstanced, StudType};
-use log::{debug, error, info};
+use ldr_tools::{LDrawColor, LDrawSceneInstanced};
+use log::{debug, info};
 use scene::{draw_indirect, IndirectSceneData};
 use texture::create_depth_pyramid_texture;
 use wgpu::util::DeviceExt;
-use winit::{
-    dpi::PhysicalPosition,
-    event::*,
-    event_loop::EventLoop,
-    window::{Window, WindowBuilder},
-};
+use winit::{dpi::PhysicalPosition, event::*, window::Window};
 
 use crate::{
     pipeline::*,
@@ -71,11 +66,11 @@ struct ScanBindGroups {
     add_sums: shader::scan_add::bind_groups::BindGroup0,
 }
 
-struct State<'w> {
+pub struct State<'w> {
     surface: wgpu::Surface<'w>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    size: winit::dpi::PhysicalSize<u32>,
+    pub size: winit::dpi::PhysicalSize<u32>,
     config: wgpu::SurfaceConfiguration,
 
     translation: Vec3,
@@ -134,7 +129,7 @@ struct InputState {
 }
 
 impl<'w> State<'w> {
-    async fn new(
+    pub async fn new(
         window: &'w Window,
         scene: &LDrawSceneInstanced,
         color_table: &HashMap<u32, LDrawColor>,
@@ -176,7 +171,7 @@ impl<'w> State<'w> {
                     label: None,
                     required_features,
                     required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::default()
+                    memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
             )
@@ -380,7 +375,7 @@ impl<'w> State<'w> {
         }
     }
 
-    fn update_camera(&self, size: winit::dpi::PhysicalSize<u32>) {
+    pub fn update_camera(&self, size: winit::dpi::PhysicalSize<u32>) {
         let camera_data = calculate_camera_data(size, self.translation, self.rotation_xyz);
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -405,7 +400,7 @@ impl<'w> State<'w> {
         );
     }
 
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             // Update each resource that depends on window size.
             self.size = new_size;
@@ -442,12 +437,20 @@ impl<'w> State<'w> {
         }
     }
 
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let output_view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let encoder = self.render_scene(output_view);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        Ok(())
+    }
+
+    fn render_scene(&mut self, output_view: wgpu::TextureView) -> wgpu::CommandEncoder {
         // Use a two pass conservative culling scheme introduced in the following paper:
         // "Patch-Based Occlusion Culling for Hardware Tessellation"
         // http://www.graphics.stanford.edu/~niessner/papers/2012/2occlusion/niessner2012patch.pdf
@@ -512,10 +515,7 @@ impl<'w> State<'w> {
 
         // Draw everything that is newly visible in this frame.
         self.model_pass(&mut encoder, &output_view, false);
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-        Ok(())
+        encoder
     }
 
     fn model_pass(
@@ -725,8 +725,7 @@ impl<'w> State<'w> {
         }
     }
 
-    // Make this a reusable library that only requires glam?
-    fn handle_input(&mut self, event: &WindowEvent) {
+    pub fn handle_input(&mut self, event: &WindowEvent) {
         match event {
             WindowEvent::KeyboardInput { .. } => {}
             WindowEvent::MouseInput { button, state, .. } => {
@@ -940,69 +939,4 @@ fn calculate_camera_data(
         p11,
         position,
     }
-}
-
-fn main() {
-    // Ignore most wgpu logs to avoid flooding the console.
-    simple_logger::SimpleLogger::new()
-        .with_level(log::LevelFilter::Warn)
-        .with_module_level("ldr_wgpu", log::LevelFilter::Info)
-        .init()
-        .unwrap();
-
-    let args: Vec<_> = std::env::args().collect();
-    let ldraw_path = &args[1];
-    let path = &args[2];
-
-    // Weld vertices to take advantage of vertex caching/batching on the GPU.
-    let start = std::time::Instant::now();
-    let settings = GeometrySettings {
-        triangulate: true,
-        weld_vertices: true,
-        stud_type: StudType::HighContrast,
-        ..Default::default()
-    };
-    let scene = ldr_tools::load_file_instanced(path, ldraw_path, &[], &settings);
-    info!("Load scene: {:?}", start.elapsed());
-
-    let color_table = ldr_tools::load_color_table(ldraw_path);
-
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new()
-        .with_title(concat!("ldr_wgpu ", env!("CARGO_PKG_VERSION")))
-        .build(&event_loop)
-        .unwrap();
-
-    let mut state = block_on(State::new(&window, &scene, &color_table));
-    event_loop
-        .run(|event, target| match event {
-            Event::WindowEvent {
-                ref event,
-                window_id,
-            } if window_id == window.id() => match event {
-                WindowEvent::CloseRequested => target.exit(),
-                WindowEvent::Resized(physical_size) => {
-                    state.resize(*physical_size);
-                    state.update_camera(*physical_size);
-                    window.request_redraw();
-                }
-                WindowEvent::ScaleFactorChanged { .. } => {}
-                WindowEvent::RedrawRequested => {
-                    match state.render() {
-                        Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                        Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
-                        Err(e) => error!("{e:?}"),
-                    }
-                    window.request_redraw();
-                }
-                _ => {
-                    state.handle_input(event);
-                    state.update_camera(window.inner_size());
-                    window.request_redraw();
-                }
-            },
-            _ => (),
-        })
-        .unwrap();
 }
