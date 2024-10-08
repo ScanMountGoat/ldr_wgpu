@@ -2,7 +2,11 @@ use std::path::Path;
 
 use futures::executor::block_on;
 use image::ImageBuffer;
-use ldr_tools::{GeometrySettings, StudType};
+use ldr_tools::{
+    glam::{vec3, Vec3},
+    GeometrySettings, StudType,
+};
+use ldr_wgpu::calculate_camera_data;
 use log::info;
 
 const WIDTH: u32 = 512;
@@ -83,7 +87,18 @@ fn main() {
 
     let color_table = ldr_tools::load_color_table(ldraw_path);
 
-    let mut renderer = ldr_wgpu::Renderer::new(&device, WIDTH, HEIGHT, format, supported_features);
+    let translation = vec3(0.0, -0.5, -200.0);
+    let rotation_xyz = Vec3::ZERO;
+    let camera_data = calculate_camera_data(WIDTH, HEIGHT, translation, rotation_xyz);
+
+    let mut renderer = ldr_wgpu::Renderer::new(
+        &device,
+        WIDTH,
+        HEIGHT,
+        &camera_data,
+        format,
+        supported_features,
+    );
 
     globwalk::GlobWalkerBuilder::from_patterns(input_folder, &["*.{dat}"])
         .build()

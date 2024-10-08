@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 
 use futures::executor::block_on;
-use glam::{vec3, vec4, Mat4, Vec3, Vec4};
+use glam::{vec4, Mat4, Vec4};
 use ldr_tools::{LDrawColor, LDrawSceneInstanced};
 use log::{debug, info};
 use scene::{draw_indirect, IndirectSceneData};
 use texture::create_depth_pyramid_texture;
 use wgpu::util::DeviceExt;
-use winit::{dpi::PhysicalPosition, event::*};
 
 use crate::{
     pipeline::*,
@@ -25,7 +24,7 @@ mod texture;
 const MSAA_SAMPLES: u32 = 4;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-const FOV_Y: f32 = 0.5;
+pub const FOV_Y: f32 = 0.5;
 const Z_NEAR: f32 = 0.1;
 // The far plane can be infinity since we use reversed-z.
 const Z_FAR: f32 = f32::INFINITY;
@@ -49,7 +48,7 @@ fn depth_op_reversed() -> wgpu::Operations<f32> {
     }
 }
 
-struct CameraData {
+pub struct CameraData {
     view: Mat4,
     view_projection: Mat4,
     // https://vkguide.dev/docs/gpudriven/compute_culling/
@@ -66,8 +65,6 @@ struct ScanBindGroups {
 }
 
 pub struct Renderer {
-    translation: Vec3,
-    rotation_xyz: Vec3,
     camera_buffer: wgpu::Buffer,
 
     output_view_msaa: wgpu::TextureView,
@@ -95,8 +92,6 @@ pub struct Renderer {
     scan_add_pipeline: wgpu::ComputePipeline,
 
     supports_indirect_count: bool,
-
-    input_state: InputState,
 }
 
 pub struct RenderData {
@@ -114,13 +109,6 @@ struct DepthPyramid {
     all_mips: wgpu::TextureView,
     base_bind_group: shader::blit_depth::bind_groups::BindGroup0,
     mip_bind_groups: Vec<shader::depth_pyramid::bind_groups::BindGroup0>,
-}
-
-#[derive(Default)]
-struct InputState {
-    is_mouse_left_clicked: bool,
-    is_mouse_right_clicked: bool,
-    previous_cursor_position: PhysicalPosition<f64>,
 }
 
 // TODO: merge with scene?
@@ -228,6 +216,7 @@ impl Renderer {
         device: &wgpu::Device,
         width: u32,
         height: u32,
+        camera_data: &CameraData,
         output_format: wgpu::TextureFormat,
         supported_features: wgpu::Features,
     ) -> Self {
@@ -245,10 +234,6 @@ impl Renderer {
         let scan_add_pipeline = shader::scan_add::compute::create_main_pipeline(device);
         let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(device);
         let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(device);
-
-        let translation = vec3(0.0, -0.5, -200.0);
-        let rotation_xyz = Vec3::ZERO;
-        let camera_data = calculate_camera_data(width, height, translation, rotation_xyz);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera buffer"),
@@ -310,8 +295,6 @@ impl Renderer {
             culling_pipeline,
             culling_bind_group0,
             bind_group0,
-            translation,
-            rotation_xyz,
             camera_buffer,
             depth_texture,
             depth_view,
@@ -323,12 +306,10 @@ impl Renderer {
             scan_pipeline,
             scan_add_pipeline,
             supports_indirect_count,
-            input_state: Default::default(),
         }
     }
 
-    pub fn update_camera(&self, queue: &wgpu::Queue, width: u32, height: u32) {
-        let camera_data = calculate_camera_data(width, height, self.translation, self.rotation_xyz);
+    pub fn update_camera(&self, queue: &wgpu::Queue, camera_data: &CameraData) {
         queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -696,67 +677,6 @@ impl Renderer {
             compute_pass.dispatch_workgroups(count_x, count_y, 1);
         }
     }
-
-    pub fn handle_input(&mut self, event: &WindowEvent, size: winit::dpi::PhysicalSize<u32>) {
-        match event {
-            WindowEvent::KeyboardInput { .. } => {}
-            WindowEvent::MouseInput { button, state, .. } => {
-                // Track mouse clicks to only rotate when dragging while clicked.
-                match (button, state) {
-                    (MouseButton::Left, ElementState::Pressed) => {
-                        self.input_state.is_mouse_left_clicked = true
-                    }
-                    (MouseButton::Left, ElementState::Released) => {
-                        self.input_state.is_mouse_left_clicked = false
-                    }
-                    (MouseButton::Right, ElementState::Pressed) => {
-                        self.input_state.is_mouse_right_clicked = true
-                    }
-                    (MouseButton::Right, ElementState::Released) => {
-                        self.input_state.is_mouse_right_clicked = false
-                    }
-                    _ => (),
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                if self.input_state.is_mouse_left_clicked {
-                    let delta_x = position.x - self.input_state.previous_cursor_position.x;
-                    let delta_y = position.y - self.input_state.previous_cursor_position.y;
-
-                    // Swap XY so that dragging left/right rotates left/right.
-                    self.rotation_xyz.x += (delta_y * 0.01) as f32;
-                    self.rotation_xyz.y += (delta_x * 0.01) as f32;
-                } else if self.input_state.is_mouse_right_clicked {
-                    let delta_x = position.x - self.input_state.previous_cursor_position.x;
-                    let delta_y = position.y - self.input_state.previous_cursor_position.y;
-
-                    // Translate an equivalent distance in screen space based on the camera.
-                    // The viewport height and vertical field of view define the conversion.
-                    let fac = FOV_Y.sin() * self.translation.z.abs() / size.height as f32;
-
-                    // Negate y so that dragging up "drags" the model up.
-                    self.translation.x += delta_x as f32 * fac;
-                    self.translation.y -= delta_y as f32 * fac;
-                }
-                // Always update the position to avoid jumps when moving between clicks.
-                self.input_state.previous_cursor_position = *position;
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // TODO: Add tests for handling scroll events properly?
-                // Scale zoom speed with distance to make it easier to zoom out large scenes.
-                let delta_z = match delta {
-                    MouseScrollDelta::LineDelta(_x, y) => *y * self.translation.z.abs() * 0.1,
-                    MouseScrollDelta::PixelDelta(p) => {
-                        p.y as f32 * self.translation.z.abs() * 0.005
-                    }
-                };
-
-                // Clamp to prevent the user from zooming through the origin.
-                self.translation.z = (self.translation.z + delta_z).min(-1.0);
-            }
-            _ => (),
-        }
-    }
 }
 
 pub fn required_features(supported_features: wgpu::Features) -> wgpu::Features {
@@ -881,7 +801,7 @@ const fn div_round_up(x: u32, d: u32) -> u32 {
     (x + d - 1) / d
 }
 
-fn calculate_camera_data(
+pub fn calculate_camera_data(
     width: u32,
     height: u32,
     translation: glam::Vec3,
