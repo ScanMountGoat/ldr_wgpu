@@ -1,3 +1,3 @@
 [workspace]
-members = [ "ldr_viewer", "ldr_wgpu"]
+members = ["ldr_viewer", "ldr_wgpu", "ldr_wgpu_batch"]
 resolver = "2"

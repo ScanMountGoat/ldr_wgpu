@@ -1,0 +1,16 @@
+[package]
+name = "ldr_wgpu_batch"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ldr_wgpu = { path = "../ldr_wgpu" }
+futures = "0.3.27"
+wgpu = "22.1.0"
+winit = { version = "0.29.4", features = ["rwh_05"] }
+ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "f8d9b3f" }
+futures-intrusive = "0.5.0"
+simple_logger = "4.2.0"
+log = "0.4.19"
+image = { version = "0.25.2", default-features = false, features = ["png"] }
+globwalk = "0.9.1"
