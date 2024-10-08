@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.27"
-wgpu = "22.1.0"
+wgpu = "0.20.1"
 ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "f8d9b3f" }
 bytemuck = { version = "1.18", features = [ "derive" ] }
 glam = { version = "0.25.0", features = ["bytemuck"] }
@@ -16,4 +16,4 @@ log = "0.4.19"
 meshopt = "0.3.0"
 
 [build-dependencies]
-wgsl_to_wgpu = "0.10.1"
+wgsl_to_wgpu = "0.8.1"

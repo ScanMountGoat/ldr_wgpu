@@ -55,7 +55,6 @@ impl<'a> State<'a> {
                     label: None,
                     required_features,
                     required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
             )
