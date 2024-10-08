@@ -23,7 +23,7 @@ mod shader;
 mod texture;
 
 const MSAA_SAMPLES: u32 = 4;
-const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 const FOV_Y: f32 = 0.5;
@@ -66,13 +66,7 @@ struct ScanBindGroups {
     add_sums: shader::scan_add::bind_groups::BindGroup0,
 }
 
-pub struct State<'w> {
-    surface: wgpu::Surface<'w>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    pub size: winit::dpi::PhysicalSize<u32>,
-    config: wgpu::SurfaceConfiguration,
-
+pub struct Renderer {
     translation: Vec3,
     rotation_xyz: Vec3,
     camera_buffer: wgpu::Buffer,
@@ -93,24 +87,26 @@ pub struct State<'w> {
     model_edges_pipeline: wgpu::RenderPipeline,
 
     visibility_pipeline: wgpu::ComputePipeline,
-    visible_bind_group: shader::visibility::bind_groups::BindGroup0,
-    newly_visible_bind_group: shader::visibility::bind_groups::BindGroup0,
 
     camera_culling_buffer: wgpu::Buffer,
     culling_bind_group0: shader::culling::bind_groups::BindGroup0,
-    culling_bind_group1: shader::culling::bind_groups::BindGroup1,
     culling_pipeline: wgpu::ComputePipeline,
 
     scan_pipeline: wgpu::ComputePipeline,
     scan_add_pipeline: wgpu::ComputePipeline,
-    scan_visible: ScanBindGroups,
-    scan_newly_visible: ScanBindGroups,
-
-    render_data: IndirectSceneData,
 
     supports_indirect_count: bool,
 
     input_state: InputState,
+}
+
+pub struct RenderData {
+    scene: IndirectSceneData,
+    culling_bind_group1: shader::culling::bind_groups::BindGroup1,
+    visible_bind_group: shader::visibility::bind_groups::BindGroup0,
+    newly_visible_bind_group: shader::visibility::bind_groups::BindGroup0,
+    scan_visible: ScanBindGroups,
+    scan_newly_visible: ScanBindGroups,
 }
 
 struct DepthPyramid {
@@ -128,142 +124,21 @@ struct InputState {
     previous_cursor_position: PhysicalPosition<f64>,
 }
 
-impl<'w> State<'w> {
-    pub async fn new(
-        window: &'w Window,
-        scene: &LDrawSceneInstanced,
+// TODO: merge with scene?
+impl RenderData {
+    pub fn new(
+        device: &wgpu::Device,
+        ldraw_scene: &LDrawSceneInstanced,
         color_table: &HashMap<u32, LDrawColor>,
     ) -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-        let surface = instance.create_surface(window).unwrap();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .unwrap();
-        debug!("{:#?}", adapter.get_info());
-
-        let mut required_features = wgpu::Features::MULTI_DRAW_INDIRECT
-            | wgpu::Features::INDIRECT_FIRST_INSTANCE
-            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            | wgpu::Features::POLYGON_MODE_LINE
-            | wgpu::Features::FLOAT32_FILTERABLE;
-
-        debug!("{:?}", adapter.features());
-
-        // Indirect count isn't supported on metal, so check first.
-        let supports_indirect_count = adapter
-            .features()
-            .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
-        if supports_indirect_count {
-            required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
-        }
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features,
-                    required_limits: wgpu::Limits::default(),
-                    memory_hints: wgpu::MemoryHints::default(),
-                },
-                None,
-            )
-            .await
-            .unwrap();
-
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: COLOR_FORMAT,
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: Vec::new(),
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
-        let model_pipeline = create_pipeline(&device, COLOR_FORMAT, false);
-        let model_edges_pipeline = create_pipeline(&device, COLOR_FORMAT, true);
-
-        let visibility_pipeline = shader::visibility::compute::create_main_pipeline(&device);
-        let culling_pipeline = shader::culling::compute::create_main_pipeline(&device);
-        let scan_pipeline = shader::scan::compute::create_main_pipeline(&device);
-        let scan_add_pipeline = shader::scan_add::compute::create_main_pipeline(&device);
-        let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(&device);
-        let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(&device);
-
-        let translation = vec3(0.0, -0.5, -200.0);
-        let rotation_xyz = Vec3::ZERO;
-        let camera_data = calculate_camera_data(size, translation, rotation_xyz);
-
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("camera buffer"),
-            contents: bytemuck::cast_slice(&[shader::model::Camera {
-                view_projection: camera_data.view_projection,
-                position: camera_data.position,
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let bind_group0 = shader::model::bind_groups::BindGroup0::from_bindings(
-            &device,
-            shader::model::bind_groups::BindGroupLayout0 {
-                camera: camera_buffer.as_entire_buffer_binding(),
-            },
-        );
-
         let start = std::time::Instant::now();
-        let render_data = load_render_data(&device, scene, color_table);
+        let render_data = load_render_data(&device, ldraw_scene, color_table);
         info!(
             "Load {} parts, {} unique colored parts, and {} unique parts: {:?}",
             render_data.solid.draw_count,
-            scene.geometry_world_transforms.len(),
-            scene.geometry_cache.len(),
+            ldraw_scene.geometry_world_transforms.len(),
+            ldraw_scene.geometry_cache.len(),
             start.elapsed()
-        );
-
-        // TODO: just use encase for this to avoid manually handling padding?
-        let camera_culling_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("camera culling buffer"),
-            contents: bytemuck::cast_slice(&[shader::culling::Camera {
-                z_near: Z_NEAR,
-                z_far: Z_FAR,
-                p00: camera_data.p00,
-                p11: camera_data.p11,
-                frustum: camera_data.frustum,
-                view_projection: camera_data.view_projection,
-                view: camera_data.view,
-            }]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let (depth_texture, depth_view) = create_depth_texture(&device, size.width, size.height);
-
-        let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
-
-        let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            min_filter: wgpu::FilterMode::Nearest,
-            mag_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
-            &device,
-            shader::culling::bind_groups::BindGroupLayout0 {
-                camera: camera_culling_buffer.as_entire_buffer_binding(),
-                depth_pyramid: &depth_pyramid.all_mips,
-                depth_sampler: &depth_sampler,
-            },
         );
 
         let culling_bind_group1 = shader::culling::bind_groups::BindGroup1::from_bindings(
@@ -338,22 +213,103 @@ impl<'w> State<'w> {
             &render_data.scanned_new_visibility_buffer,
         );
 
+        Self {
+            scene: render_data,
+            culling_bind_group1,
+            visible_bind_group,
+            newly_visible_bind_group,
+            scan_visible,
+            scan_newly_visible,
+        }
+    }
+}
+
+impl Renderer {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: winit::dpi::PhysicalSize<u32>,
+        supported_features: wgpu::Features,
+    ) -> Self {
+        let required_features = required_features(supported_features);
+        let supports_indirect_count =
+            required_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
+        debug!("{:?}", required_features);
+
+        let model_pipeline = create_pipeline(&device, COLOR_FORMAT, false);
+        let model_edges_pipeline = create_pipeline(&device, COLOR_FORMAT, true);
+
+        let visibility_pipeline = shader::visibility::compute::create_main_pipeline(&device);
+        let culling_pipeline = shader::culling::compute::create_main_pipeline(&device);
+        let scan_pipeline = shader::scan::compute::create_main_pipeline(&device);
+        let scan_add_pipeline = shader::scan_add::compute::create_main_pipeline(&device);
+        let depth_pyramid_pipeline = shader::depth_pyramid::compute::create_main_pipeline(&device);
+        let blit_depth_pipeline = shader::blit_depth::compute::create_main_pipeline(&device);
+
+        let translation = vec3(0.0, -0.5, -200.0);
+        let rotation_xyz = Vec3::ZERO;
+        let camera_data = calculate_camera_data(size, translation, rotation_xyz);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera buffer"),
+            contents: bytemuck::cast_slice(&[shader::model::Camera {
+                view_projection: camera_data.view_projection,
+                position: camera_data.position,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group0 = shader::model::bind_groups::BindGroup0::from_bindings(
+            &device,
+            shader::model::bind_groups::BindGroupLayout0 {
+                camera: camera_buffer.as_entire_buffer_binding(),
+            },
+        );
+
+        // TODO: just use encase for this to avoid manually handling padding?
+        let camera_culling_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera culling buffer"),
+            contents: bytemuck::cast_slice(&[shader::culling::Camera {
+                z_near: Z_NEAR,
+                z_far: Z_FAR,
+                p00: camera_data.p00,
+                p11: camera_data.p11,
+                frustum: camera_data.frustum,
+                view_projection: camera_data.view_projection,
+                view: camera_data.view,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let (depth_texture, depth_view) = create_depth_texture(&device, size.width, size.height);
+
+        let depth_pyramid = create_depth_pyramid(&device, size, &depth_view);
+
+        let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            min_filter: wgpu::FilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
+            &device,
+            shader::culling::bind_groups::BindGroupLayout0 {
+                camera: camera_culling_buffer.as_entire_buffer_binding(),
+                depth_pyramid: &depth_pyramid.all_mips,
+                depth_sampler: &depth_sampler,
+            },
+        );
+
         let output_view_msaa = create_output_msaa_view(&device, size.width, size.height);
 
         Self {
-            surface,
-            device,
-            queue,
-            size,
-            config,
             model_pipeline,
             model_edges_pipeline,
             visibility_pipeline,
             culling_pipeline,
             culling_bind_group0,
-            culling_bind_group1,
             bind_group0,
-            render_data,
             translation,
             rotation_xyz,
             camera_buffer,
@@ -364,20 +320,16 @@ impl<'w> State<'w> {
             depth_pyramid,
             depth_pyramid_pipeline,
             blit_depth_pipeline,
-            visible_bind_group,
-            newly_visible_bind_group,
             scan_pipeline,
             scan_add_pipeline,
-            scan_visible,
-            scan_newly_visible,
             supports_indirect_count,
             input_state: Default::default(),
         }
     }
 
-    pub fn update_camera(&self, size: winit::dpi::PhysicalSize<u32>) {
+    pub fn update_camera(&self, queue: &wgpu::Queue, size: winit::dpi::PhysicalSize<u32>) {
         let camera_data = calculate_camera_data(size, self.translation, self.rotation_xyz);
-        self.queue.write_buffer(
+        queue.write_buffer(
             &self.camera_buffer,
             0,
             bytemuck::cast_slice(&[shader::model::Camera {
@@ -385,7 +337,7 @@ impl<'w> State<'w> {
                 position: camera_data.position,
             }]),
         );
-        self.queue.write_buffer(
+        queue.write_buffer(
             &self.camera_culling_buffer,
             0,
             bytemuck::cast_slice(&[shader::culling::Camera {
@@ -400,25 +352,25 @@ impl<'w> State<'w> {
         );
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        new_size: winit::dpi::PhysicalSize<u32>,
+    ) {
         if new_size.width > 0 && new_size.height > 0 {
             // Update each resource that depends on window size.
-            self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-
             let (depth_texture, depth_view) =
-                create_depth_texture(&self.device, new_size.width, new_size.height);
+                create_depth_texture(device, new_size.width, new_size.height);
             self.depth_texture = depth_texture;
             self.depth_view = depth_view;
 
-            self.depth_pyramid = create_depth_pyramid(&self.device, new_size, &self.depth_view);
+            self.depth_pyramid = create_depth_pyramid(device, new_size, &self.depth_view);
 
             self.output_view_msaa =
-                create_output_msaa_view(&self.device, new_size.width, new_size.height);
+                create_output_msaa_view(device, new_size.width, new_size.height);
 
-            let depth_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            let depth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
                 min_filter: wgpu::FilterMode::Nearest,
                 mag_filter: wgpu::FilterMode::Nearest,
                 mipmap_filter: wgpu::FilterMode::Nearest,
@@ -427,7 +379,7 @@ impl<'w> State<'w> {
 
             // The textures were updated, so use views pointing to the new textures.
             self.culling_bind_group0 = shader::culling::bind_groups::BindGroup0::from_bindings(
-                &self.device,
+                device,
                 shader::culling::bind_groups::BindGroupLayout0 {
                     camera: self.camera_culling_buffer.as_entire_buffer_binding(),
                     depth_pyramid: &self.depth_pyramid.all_mips,
@@ -437,84 +389,83 @@ impl<'w> State<'w> {
         }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let output_view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        render_data: &mut RenderData,
+        output_view: &wgpu::TextureView,
+    ) {
+        let encoder = self.render_scene(device, queue, render_data, output_view);
 
-        let encoder = self.render_scene(output_view);
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-        Ok(())
+        queue.submit(std::iter::once(encoder.finish()));
     }
 
-    fn render_scene(&mut self, output_view: wgpu::TextureView) -> wgpu::CommandEncoder {
+    fn render_scene(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        render_data: &mut RenderData,
+        output_view: &wgpu::TextureView,
+    ) -> wgpu::CommandEncoder {
         // Use a two pass conservative culling scheme introduced in the following paper:
         // "Patch-Based Occlusion Culling for Hardware Tessellation"
         // http://www.graphics.stanford.edu/~niessner/papers/2012/2occlusion/niessner2012patch.pdf
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder"),
+        });
 
-        self.set_visibility_pass(&mut encoder, false);
+        self.set_visibility_pass(&mut encoder, render_data,false);
 
         // The synchronization and copies aren't necessary if indirect count is supported.
         if !self.supports_indirect_count {
             encoder.copy_buffer_to_buffer(
-                &self.render_data.compacted_count_buffer,
+                &render_data.scene.compacted_count_buffer,
                 0,
-                &self.render_data.compacted_count_staging_buffer,
+                &render_data.scene.compacted_count_staging_buffer,
                 0,
-                self.render_data.compacted_count_staging_buffer.size(),
+                render_data.scene.compacted_count_staging_buffer.size(),
             );
             // Submit to make sure the copy finishes.
-            self.queue.submit(std::iter::once(encoder.finish()));
-            self.update_compacted_draw_count();
+            queue.submit(std::iter::once(encoder.finish()));
+            self.update_compacted_draw_count(device, render_data);
 
-            encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Render Encoder 2"),
-                });
+            encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder 2"),
+            });
         }
 
         // TODO: Draw transparent twice with front faces and then back faces culled?
         // TODO: Fix high contrast studs (manually add stud files to ldr_tools)
         // TODO: Port right click pan from ssbh_wgpu
         // Draw everything that was visible last frame.
-        self.model_pass(&mut encoder, &output_view, true);
+        self.model_pass(&mut encoder, &output_view, render_data,true);
 
         // Apply culling to set visibility and enable newly visible objects.
         self.depth_pyramid_pass(&mut encoder);
-        self.occlusion_culling_pass(&mut encoder);
-        self.set_visibility_pass(&mut encoder, true);
+        self.occlusion_culling_pass(&mut encoder, render_data);
+        self.set_visibility_pass(&mut encoder, render_data,true);
 
         if !self.supports_indirect_count {
             // Make sure the staging buffer is set up for the next compaction operation.
             encoder.copy_buffer_to_buffer(
-                &self.render_data.compacted_count_buffer,
+                &render_data.scene.compacted_count_buffer,
                 0,
-                &self.render_data.compacted_count_staging_buffer,
+                &render_data.scene.compacted_count_staging_buffer,
                 0,
-                self.render_data.compacted_count_staging_buffer.size(),
+                render_data.scene.compacted_count_staging_buffer.size(),
             );
             // Submit to make sure the copy completes.
-            self.queue.submit(std::iter::once(encoder.finish()));
-            self.update_compacted_draw_count();
+            queue.submit(std::iter::once(encoder.finish()));
+            self.update_compacted_draw_count(device, render_data);
 
-            encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Render Encoder 3"),
-                });
+            encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder 3"),
+            });
         }
 
         // Draw everything that is newly visible in this frame.
-        self.model_pass(&mut encoder, &output_view, false);
+        self.model_pass(&mut encoder, &output_view, render_data, false);
         encoder
     }
 
@@ -522,6 +473,7 @@ impl<'w> State<'w> {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         output_view: &wgpu::TextureView,
+        render_data: &RenderData,
         first_pass: bool,
     ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -563,43 +515,43 @@ impl<'w> State<'w> {
         render_pass.set_pipeline(&self.model_pipeline);
         draw_indirect(
             &mut render_pass,
-            &self.render_data,
-            &self.render_data.solid,
+            &render_data.scene,
+            &render_data.scene.solid,
             self.supports_indirect_count,
         );
 
         render_pass.set_pipeline(&self.model_edges_pipeline);
         draw_indirect(
             &mut render_pass,
-            &self.render_data,
-            &self.render_data.edges,
+            &render_data.scene,
+            &render_data.scene.edges,
             self.supports_indirect_count,
         );
     }
 
-    fn update_compacted_draw_count(&mut self) {
+    fn update_compacted_draw_count(&mut self, device: &wgpu::Device, render_data: &mut RenderData) {
         // TODO: return a value instead?
-        let buffer_slice = self.render_data.compacted_count_staging_buffer.slice(..);
+        let buffer_slice = render_data.scene.compacted_count_staging_buffer.slice(..);
 
         let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
 
-        self.device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::Maintain::Wait);
 
         if let Some(Ok(())) = block_on(receiver.receive()) {
             let data = buffer_slice.get_mapped_range();
             let counts: &[u32] = bytemuck::cast_slice(&data);
 
             let draw_count = counts[0];
-            self.render_data.solid.compacted_draw_count = draw_count;
-            self.render_data.edges.compacted_draw_count = draw_count;
+            render_data.scene.solid.compacted_draw_count = draw_count;
+            render_data.scene.edges.compacted_draw_count = draw_count;
 
             drop(data);
-            self.render_data.compacted_count_staging_buffer.unmap();
+            render_data.scene.compacted_count_staging_buffer.unmap();
         }
     }
 
-    fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder) {
+    fn occlusion_culling_pass(&self, encoder: &mut wgpu::CommandEncoder, render_data: &RenderData) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Occlusion Culling Pass"),
             timestamp_writes: None,
@@ -609,27 +561,27 @@ impl<'w> State<'w> {
         shader::culling::set_bind_groups(
             &mut compute_pass,
             &self.culling_bind_group0,
-            &self.culling_bind_group1,
+            &render_data.culling_bind_group1,
         );
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::culling::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draw_count, size_x);
+        let count = div_round_up(render_data.scene.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
-    fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder, newly_visible: bool) {
+    fn set_visibility_pass(&self, encoder: &mut wgpu::CommandEncoder, render_data: &RenderData, newly_visible: bool) {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Set Visibility Pass"),
             timestamp_writes: None,
         });
 
         if newly_visible {
-            self.scan_recursive(&mut compute_pass, &self.scan_newly_visible);
-            self.set_visibility(&mut compute_pass, &self.newly_visible_bind_group);
+            self.scan_recursive(&mut compute_pass, &render_data.scan_newly_visible, render_data);
+            self.set_visibility(&mut compute_pass, &render_data.newly_visible_bind_group, render_data);
         } else {
-            self.scan_recursive(&mut compute_pass, &self.scan_visible);
-            self.set_visibility(&mut compute_pass, &self.visible_bind_group);
+            self.scan_recursive(&mut compute_pass, &render_data.scan_visible, render_data);
+            self.set_visibility(&mut compute_pass, &render_data.visible_bind_group, render_data);
         }
     }
 
@@ -637,26 +589,28 @@ impl<'w> State<'w> {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_groups: &'a ScanBindGroups,
+        render_data: &RenderData
     ) {
         // Recursively scan to support scanning arrays much larger than a single workgroup.
-        self.scan(compute_pass, &bind_groups.scan);
+        self.scan(compute_pass, &bind_groups.scan, render_data);
         if let Some(scan_sums) = &bind_groups.scan_sums {
-            self.scan_recursive(compute_pass, scan_sums);
+            self.scan_recursive(compute_pass, scan_sums, render_data);
         }
-        self.scan_add(compute_pass, &bind_groups.add_sums);
+        self.scan_add(compute_pass, &bind_groups.add_sums, render_data);
     }
 
     fn set_visibility<'a>(
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_group0: &'a shader::visibility::bind_groups::BindGroup0,
+        render_data: &RenderData
     ) {
         compute_pass.set_pipeline(&self.visibility_pipeline);
         shader::visibility::set_bind_groups(compute_pass, bind_group0);
 
         // Assume the workgroup is 1D.
         let [size_x, _, _] = shader::visibility::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draw_count, size_x);
+        let count = div_round_up(render_data.scene.solid.draw_count, size_x);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -664,13 +618,14 @@ impl<'w> State<'w> {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_group0: &'a shader::scan_add::bind_groups::BindGroup0,
+        render_data: &RenderData
     ) {
         compute_pass.set_pipeline(&self.scan_add_pipeline);
         shader::scan_add::set_bind_groups(compute_pass, bind_group0);
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan_add::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draw_count, size_x * 2);
+        let count = div_round_up(render_data.scene.solid.draw_count, size_x * 2);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -678,13 +633,14 @@ impl<'w> State<'w> {
         &'a self,
         compute_pass: &mut wgpu::ComputePass<'a>,
         bind_group0: &'a shader::scan::bind_groups::BindGroup0,
+        render_data: &RenderData
     ) {
         compute_pass.set_pipeline(&self.scan_pipeline);
         shader::scan::set_bind_groups(compute_pass, bind_group0);
 
         // Assume the workgroup is 1D and processes 2 elements per thread.
         let [size_x, _, _] = shader::scan::compute::MAIN_WORKGROUP_SIZE;
-        let count = div_round_up(self.render_data.solid.draw_count, size_x * 2);
+        let count = div_round_up(render_data.scene.solid.draw_count, size_x * 2);
         compute_pass.dispatch_workgroups(count, 1, 1);
     }
 
@@ -725,7 +681,7 @@ impl<'w> State<'w> {
         }
     }
 
-    pub fn handle_input(&mut self, event: &WindowEvent) {
+    pub fn handle_input(&mut self, event: &WindowEvent, size: winit::dpi::PhysicalSize<u32>) {
         match event {
             WindowEvent::KeyboardInput { .. } => {}
             WindowEvent::MouseInput { button, state, .. } => {
@@ -760,7 +716,7 @@ impl<'w> State<'w> {
 
                     // Translate an equivalent distance in screen space based on the camera.
                     // The viewport height and vertical field of view define the conversion.
-                    let fac = FOV_Y.sin() * self.translation.z.abs() / self.size.height as f32;
+                    let fac = FOV_Y.sin() * self.translation.z.abs() / size.height as f32;
 
                     // Negate y so that dragging up "drags" the model up.
                     self.translation.x += delta_x as f32 * fac;
@@ -785,6 +741,20 @@ impl<'w> State<'w> {
             _ => (),
         }
     }
+}
+
+pub fn required_features(supported_features: wgpu::Features) -> wgpu::Features {
+    let mut required_features = wgpu::Features::MULTI_DRAW_INDIRECT
+        | wgpu::Features::INDIRECT_FIRST_INSTANCE
+        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+        | wgpu::Features::POLYGON_MODE_LINE
+        | wgpu::Features::FLOAT32_FILTERABLE;
+
+    // Indirect count isn't supported on metal, so check first.
+    if supported_features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT) {
+        required_features |= wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+    }
+    required_features
 }
 
 fn create_scan_bind_groups(
