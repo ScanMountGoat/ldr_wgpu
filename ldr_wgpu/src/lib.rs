@@ -516,7 +516,7 @@ impl Renderer {
         let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
 
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::Wait).unwrap();
 
         if let Some(Ok(())) = block_on(receiver.receive()) {
             let data = buffer_slice.get_mapped_range();

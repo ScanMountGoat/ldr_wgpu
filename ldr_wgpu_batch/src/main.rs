@@ -24,7 +24,7 @@ fn main() {
         .init()
         .unwrap();
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
         ..Default::default()
     });
@@ -39,15 +39,11 @@ fn main() {
     let supported_features = adapter.features();
     let required_features = ldr_wgpu::required_features(supported_features);
 
-    let (device, queue) = block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: None,
-            required_features,
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-        },
-        None,
-    ))
+    let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features,
+        ..Default::default()
+    }))
     .unwrap();
 
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -139,7 +135,7 @@ fn main() {
 
             // Clean up resources.
             queue.submit(std::iter::empty());
-            device.poll(wgpu::Maintain::Wait);
+            device.poll(wgpu::PollType::Wait).unwrap();
         });
 
     println!("{:?}", start.elapsed());
@@ -155,15 +151,15 @@ fn save_screenshot(
     output_path: std::path::PathBuf,
 ) {
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             aspect: wgpu::TextureAspect::All,
             texture: output,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer: output_buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(WIDTH * 4),
                 rows_per_image: Some(HEIGHT),
@@ -184,7 +180,7 @@ fn save_screenshot(
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::Wait).unwrap();
         block_on(rx.receive()).unwrap().unwrap();
 
         let data = buffer_slice.get_mapped_range();

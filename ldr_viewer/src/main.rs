@@ -31,7 +31,7 @@ struct InputState {
 
 impl<'a> State<'a> {
     async fn new(window: &'a Window, format: wgpu::TextureFormat) -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -50,14 +50,11 @@ impl<'a> State<'a> {
         let required_features = ldr_wgpu::required_features(supported_features);
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features,
-                    required_limits: wgpu::Limits::default(),
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features,
+                ..Default::default()
+            })
             .await
             .unwrap();
 

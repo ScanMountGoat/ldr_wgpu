@@ -5,10 +5,10 @@ edition = "2021"
 
 [dependencies]
 futures = "0.3.27"
-wgpu = "0.20.1"
-ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "f8d9b3f" }
+wgpu = "25.0.0"
+ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "533f088" }
 bytemuck = { version = "1.18", features = [ "derive" ] }
-glam = { version = "0.25.0", features = ["bytemuck"] }
+glam = { version = "0.30.3", features = ["bytemuck"] }
 futures-intrusive = "0.5.0"
 rayon = "1.10.0"
 simple_logger = "4.2.0"
@@ -16,4 +16,4 @@ log = "0.4.19"
 meshopt = "0.3.0"
 
 [build-dependencies]
-wgsl_to_wgpu = "0.8.1"
+wgsl_to_wgpu = "0.14.0"

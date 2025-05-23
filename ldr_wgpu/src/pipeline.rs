@@ -21,9 +21,9 @@ pub fn create_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: if edges {
-                shader::model::ENTRY_FS_EDGE_MAIN
+                Some(shader::model::ENTRY_FS_EDGE_MAIN)
             } else {
-                shader::model::ENTRY_FS_MAIN
+                Some(shader::model::ENTRY_FS_MAIN)
             },
             targets: &[Some(wgpu::ColorTargetState {
                 format: surface_format,
@@ -64,5 +64,6 @@ pub fn create_pipeline(
             ..Default::default()
         },
         multiview: None,
+        cache: None,
     })
 }
