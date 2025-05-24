@@ -1,10 +1,7 @@
 use futures::executor::block_on;
-use ldr_tools::{
-    glam::{vec3, Vec3},
-    GeometrySettings, StudType,
-};
-use ldr_wgpu::{calculate_camera_data, FOV_Y};
-use log::{debug, error, info};
+use glam::{vec3, Vec3};
+use ldr_wgpu::{calculate_camera_data, Example, FOV_Y};
+use log::{debug, error};
 use winit::{
     dpi::PhysicalPosition,
     event::*,
@@ -16,8 +13,9 @@ struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    required_features: wgpu::Features,
     config: wgpu::SurfaceConfiguration,
+
+    example: Example,
 }
 
 #[derive(Default)]
@@ -30,7 +28,12 @@ struct InputState {
 }
 
 impl<'a> State<'a> {
-    async fn new(window: &'a Window, format: wgpu::TextureFormat) -> Self {
+    async fn new(
+        window: &'a Window,
+        format: wgpu::TextureFormat,
+        path: &str,
+        ldraw_path: &str,
+    ) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -46,13 +49,10 @@ impl<'a> State<'a> {
             .unwrap();
         debug!("{:#?}", adapter.get_info());
 
-        let supported_features = adapter.features();
-        let required_features = ldr_wgpu::required_features(supported_features);
-
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features,
+                required_features: ldr_wgpu::REQUIRED_FEATURES,
                 ..Default::default()
             })
             .await
@@ -71,12 +71,14 @@ impl<'a> State<'a> {
         };
         surface.configure(&device, &config);
 
+        let example = Example::new(&device, &queue, config.format, path, ldraw_path);
+
         Self {
             surface,
             device,
             queue,
             config,
-            required_features,
+            example,
         }
     }
 }
@@ -143,16 +145,17 @@ impl InputState {
 }
 
 fn main() {
+    let args: Vec<_> = std::env::args().collect();
+
+    let ldraw_path = &args[1];
+    let path = &args[2];
+
     // Ignore most wgpu logs to avoid flooding the console.
     simple_logger::SimpleLogger::new()
         .with_level(log::LevelFilter::Warn)
-        .with_module_level("ldr_wgpu", log::LevelFilter::Info)
+        .with_module_level("ldr_wgpu", log::LevelFilter::Debug)
         .init()
         .unwrap();
-
-    let args: Vec<_> = std::env::args().collect();
-    let ldraw_path = &args[1];
-    let path = &args[2];
 
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
@@ -163,7 +166,7 @@ fn main() {
     // Choose a format that's guaranteed to be supported.
     let format = wgpu::TextureFormat::Bgra8UnormSrgb;
 
-    let mut state = block_on(State::new(&window, format));
+    let mut state = block_on(State::new(&window, format, path, ldraw_path));
 
     let mut input_state = InputState {
         translation: vec3(0.0, -0.5, -200.0),
@@ -179,30 +182,7 @@ fn main() {
         input_state.translation,
         input_state.rotation_xyz,
     );
-
-    let mut renderer = ldr_wgpu::Renderer::new(
-        &state.device,
-        size.width,
-        size.height,
-        &camera_data,
-        format,
-        state.required_features,
-    );
-
-    // Weld vertices to take advantage of vertex caching/batching on the GPU.
-    let start = std::time::Instant::now();
-    let settings = GeometrySettings {
-        triangulate: true,
-        weld_vertices: true,
-        stud_type: StudType::HighContrast,
-        ..Default::default()
-    };
-    let scene = ldr_tools::load_file_instanced(path, ldraw_path, &[], &settings);
-    info!("Load scene: {:?}", start.elapsed());
-
-    let color_table = ldr_tools::load_color_table(ldraw_path);
-
-    let mut render_data = ldr_wgpu::RenderData::new(&state.device, &scene, &color_table);
+    state.example.update_camera(&state.queue, camera_data);
 
     event_loop
         .run(|event, target| match event {
@@ -216,15 +196,13 @@ fn main() {
                     state.config.height = size.height;
                     state.surface.configure(&state.device, &state.config);
 
-                    renderer.resize(&state.device, size.width, size.height, format);
-
                     let camera_data = calculate_camera_data(
                         size.width,
                         size.height,
                         input_state.translation,
                         input_state.rotation_xyz,
                     );
-                    renderer.update_camera(&state.queue, &camera_data);
+                    state.example.update_camera(&state.queue, camera_data);
 
                     window.request_redraw();
                 }
@@ -236,18 +214,13 @@ fn main() {
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-                            renderer.render(
-                                &state.device,
-                                &state.queue,
-                                &mut render_data,
-                                &output_view,
-                            );
+                            state
+                                .example
+                                .render(&output_view, &state.device, &state.queue);
+
                             output.present();
                         }
-                        Err(wgpu::SurfaceError::Lost) => {
-                            let size = window.inner_size();
-                            renderer.resize(&state.device, size.width, size.height, format)
-                        }
+                        Err(wgpu::SurfaceError::Lost) => {}
                         Err(wgpu::SurfaceError::OutOfMemory) => target.exit(),
                         Err(e) => error!("{e:?}"),
                     }
@@ -263,7 +236,7 @@ fn main() {
                         input_state.translation,
                         input_state.rotation_xyz,
                     );
-                    renderer.update_camera(&state.queue, &camera_data);
+                    state.example.update_camera(&state.queue, camera_data);
 
                     window.request_redraw();
                 }

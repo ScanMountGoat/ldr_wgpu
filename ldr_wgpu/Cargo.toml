@@ -16,4 +16,4 @@ log = "0.4.19"
 meshopt = "0.3.0"
 
 [build-dependencies]
-wgsl_to_wgpu = "0.14.0"
+wgsl_to_wgpu = { git = "https://github.com/ScanMountGoat/wgsl_to_wgpu", rev = "c17cde3" }

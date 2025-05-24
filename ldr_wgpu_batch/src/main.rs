@@ -36,12 +36,9 @@ fn main() {
     }))
     .unwrap();
 
-    let supported_features = adapter.features();
-    let required_features = ldr_wgpu::required_features(supported_features);
-
     let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: None,
-        required_features,
+        required_features: ldr_wgpu::REQUIRED_FEATURES,
         ..Default::default()
     }))
     .unwrap();
@@ -87,14 +84,8 @@ fn main() {
     let rotation_xyz = Vec3::ZERO;
     let camera_data = calculate_camera_data(WIDTH, HEIGHT, translation, rotation_xyz);
 
-    let mut renderer = ldr_wgpu::Renderer::new(
-        &device,
-        WIDTH,
-        HEIGHT,
-        &camera_data,
-        format,
-        supported_features,
-    );
+    let mut renderer = ldr_wgpu::Example::new(&device, &queue, format, "", "");
+    renderer.update_camera(&queue, camera_data);
 
     let start = std::time::Instant::now();
 
@@ -111,9 +102,8 @@ fn main() {
                 ldr_tools::load_file_instanced(path.to_str().unwrap(), ldraw_path, &[], &settings);
             info!("Load scene: {:?}", start.elapsed());
 
-            let mut render_data = ldr_wgpu::RenderData::new(&device, &scene, &color_table);
-
-            renderer.render(&device, &queue, &mut render_data, &output_view);
+            // let mut render_data = ldr_wgpu::RenderData::new(&device, &scene, &color_table);
+            renderer.render(&output_view, &device, &queue);
 
             let file_name = path.with_extension("png");
             let file_name = file_name.file_name().unwrap();
