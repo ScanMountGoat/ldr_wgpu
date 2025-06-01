@@ -1,4 +1,5 @@
 use glam::{vec3, Mat4, Vec4};
+use ldr_tools::ColorCode;
 use log::info;
 use normal::vertex_normals;
 use std::borrow::Cow;
@@ -176,9 +177,11 @@ fn load_scene(
     // TODO: Reindex colors to only include used colors?
     scene.colors = vec![shader::LDrawColor { rgba: Vec4::ZERO }; 1024];
     for (code, color) in color_table {
-        scene.colors[code as usize] = shader::LDrawColor {
-            rgba: color.rgba_linear.into(),
-        };
+        if let Some(scene_color) = scene.colors.get_mut(code as usize) {
+            *scene_color = shader::LDrawColor {
+                rgba: color.rgba_linear.into(),
+            };
+        }
     }
 
     let start = std::time::Instant::now();
@@ -214,6 +217,26 @@ fn load_scene(
             });
         }
 
+        if geometry.face_colors.len() == 1 {
+            for face in geometry.vertex_indices.chunks_exact(3) {
+                for i in face {
+                    let color = replace_color(geometry.face_colors[0], color_code);
+                    scene.vertices[start_vertex_index + *i as usize].color_code = color;
+                }
+            }
+        } else {
+            for (face, color) in geometry
+                .vertex_indices
+                .chunks_exact(3)
+                .zip(&geometry.face_colors)
+            {
+                for i in face {
+                    let color = replace_color(*color, color_code);
+                    scene.vertices[start_vertex_index + *i as usize].color_code = color;
+                }
+            }
+        }
+
         let start_index_index = scene.indices.len();
         for i in &geometry.vertex_indices {
             scene.indices.push(*i);
@@ -247,6 +270,15 @@ fn load_scene(
     );
 
     components
+}
+
+fn replace_color(color: ColorCode, current_color: ColorCode) -> ColorCode {
+    // TODO: Make this part of ldr_tools
+    if color == 16 {
+        current_color
+    } else {
+        color
+    }
 }
 
 pub struct Example {

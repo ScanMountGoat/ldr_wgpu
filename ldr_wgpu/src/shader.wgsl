@@ -69,6 +69,10 @@ var<storage, read> geometries: array<Geometry>;
 @group(0) @binding(5)
 var acc_struct: acceleration_structure;
 
+fn interpolate_bary(v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, bary: vec3<f32>) -> vec3<f32> {
+    return v0 * bary.x + v1 * bary.y + v2 * bary.z;
+}
+
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec4(0.0);
@@ -95,14 +99,14 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 
         let first_index_index = intersection.primitive_index * 3u + index_start;
 
-        let v_0 = vertices[vertex_start + indices[first_index_index + 0u]];
-        let v_1 = vertices[vertex_start + indices[first_index_index + 1u]];
-        let v_2 = vertices[vertex_start + indices[first_index_index + 2u]];
+        let v0 = vertices[vertex_start + indices[first_index_index + 0u] ];
+        let v1 = vertices[vertex_start + indices[first_index_index + 1u] ];
+        let v2 = vertices[vertex_start + indices[first_index_index + 2u] ];
 
         let bary = vec3<f32>(1.0 - intersection.barycentrics.x - intersection.barycentrics.y, intersection.barycentrics);
 
-        let pos = v_0.pos.xyz * bary.x + v_1.pos.xyz * bary.y + v_2.pos.xyz * bary.z;
-        let normal_raw = v_0.normal.xyz * bary.x + v_1.normal.xyz * bary.y + v_2.normal.xyz * bary.z;
+        let pos = interpolate_bary(v0.pos.xyz, v1.pos.xyz, v2.pos.xyz, bary);
+        let normal_raw = interpolate_bary(v0.normal.xyz, v1.normal.xyz, v2.normal.xyz, bary);
 
         let world_normal = intersection.object_to_world * vec4(normal_raw, 0.0);
         let view_normal = camera.view * vec4(world_normal.xyz, 0.0);
@@ -114,7 +118,11 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
         let n_dot_v = max(dot(normal, view), 0.0);
 
         // TODO: How to handle attributes that don't interpolate?
-        let ldraw_color = colors[v_0.color_code].rgba;
+        // TODO: store color codes per face instead of per vertex?
+        let color0 = colors[v0.color_code].rgba;
+        let color1 = colors[v1.color_code].rgba;
+        let color2 = colors[v2.color_code].rgba;
+        let ldraw_color = interpolate_bary(color0.rgb, color1.rgb, color2.rgb, bary);
 
         let color_rgb = ldraw_color.rgb * n_dot_v;
         color = vec4(color_rgb, 1.0);
