@@ -2,10 +2,7 @@ use std::path::Path;
 
 use futures::executor::block_on;
 use image::ImageBuffer;
-use ldr_tools::{
-    glam::{vec3, Vec3},
-    GeometrySettings, StudType,
-};
+use ldr_tools::glam::{vec3, Vec3};
 use ldr_wgpu::calculate_camera_data;
 use log::info;
 
@@ -70,21 +67,11 @@ fn main() {
         mapped_at_creation: false,
     });
 
-    // Weld vertices to take advantage of vertex caching/batching on the GPU.
-    let settings = GeometrySettings {
-        triangulate: true,
-        weld_vertices: true,
-        stud_type: StudType::HighContrast,
-        ..Default::default()
-    };
-
-    let color_table = ldr_tools::load_color_table(ldraw_path);
-
     let translation = vec3(0.0, -0.5, -200.0);
     let rotation_xyz = Vec3::ZERO;
     let camera_data = calculate_camera_data(WIDTH, HEIGHT, translation, rotation_xyz);
 
-    let mut renderer = ldr_wgpu::Example::new(&device, &queue, format, "", "");
+    let mut renderer = ldr_wgpu::Renderer::new(&device, format, ldraw_path);
     renderer.update_camera(&queue, camera_data);
 
     let start = std::time::Instant::now();
@@ -95,15 +82,14 @@ fn main() {
         .unwrap()
         .for_each(|entry| {
             let path = entry.as_ref().unwrap().path();
+            let path_str = path.to_str().unwrap();
             println!("{path:?}");
 
             let start = std::time::Instant::now();
-            let scene =
-                ldr_tools::load_file_instanced(path.to_str().unwrap(), ldraw_path, &[], &settings);
+            let scene = ldr_wgpu::Scene::new(&device, &queue, &ldraw_path, path_str);
             info!("Load scene: {:?}", start.elapsed());
 
-            // let mut render_data = ldr_wgpu::RenderData::new(&device, &scene, &color_table);
-            renderer.render(&output_view, &device, &queue);
+            renderer.render(&output_view, &device, &queue, &scene);
 
             let file_name = path.with_extension("png");
             let file_name = file_name.file_name().unwrap();

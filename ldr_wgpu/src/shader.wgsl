@@ -57,16 +57,16 @@ var<uniform> camera: Camera;
 @group(0) @binding(1)
 var<storage, read> colors: array<LDrawColor>;
 
-@group(0) @binding(2)
+@group(1) @binding(0)
 var<storage, read> vertices: array<Vertex>;
 
-@group(0) @binding(3)
+@group(1) @binding(1)
 var<storage, read> indices: array<u32>;
 
-@group(0) @binding(4)
+@group(1) @binding(2)
 var<storage, read> geometries: array<Geometry>;
 
-@group(0) @binding(5)
+@group(1) @binding(3)
 var acc_struct: acceleration_structure;
 
 fn interpolate_bary(v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, bary: vec3<f32>) -> vec3<f32> {

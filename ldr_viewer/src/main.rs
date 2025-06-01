@@ -1,6 +1,6 @@
 use futures::executor::block_on;
 use glam::{vec3, Vec3};
-use ldr_wgpu::{calculate_camera_data, Example, FOV_Y};
+use ldr_wgpu::{calculate_camera_data, Renderer, Scene, FOV_Y};
 use log::{debug, error};
 use winit::{
     dpi::PhysicalPosition,
@@ -15,7 +15,8 @@ struct State<'a> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
 
-    example: Example,
+    renderer: Renderer,
+    scene: Scene,
 }
 
 #[derive(Default)]
@@ -71,14 +72,16 @@ impl<'a> State<'a> {
         };
         surface.configure(&device, &config);
 
-        let example = Example::new(&device, &queue, config.format, path, ldraw_path);
+        let example = Renderer::new(&device, config.format, ldraw_path);
+        let scene = Scene::new(&device, &queue, path, ldraw_path);
 
         Self {
             surface,
             device,
             queue,
             config,
-            example,
+            renderer: example,
+            scene,
         }
     }
 }
@@ -182,7 +185,7 @@ fn main() {
         input_state.translation,
         input_state.rotation_xyz,
     );
-    state.example.update_camera(&state.queue, camera_data);
+    state.renderer.update_camera(&state.queue, camera_data);
 
     event_loop
         .run(|event, target| match event {
@@ -202,7 +205,7 @@ fn main() {
                         input_state.translation,
                         input_state.rotation_xyz,
                     );
-                    state.example.update_camera(&state.queue, camera_data);
+                    state.renderer.update_camera(&state.queue, camera_data);
 
                     window.request_redraw();
                 }
@@ -214,9 +217,12 @@ fn main() {
                                 .texture
                                 .create_view(&wgpu::TextureViewDescriptor::default());
 
-                            state
-                                .example
-                                .render(&output_view, &state.device, &state.queue);
+                            state.renderer.render(
+                                &output_view,
+                                &state.device,
+                                &state.queue,
+                                &state.scene,
+                            );
 
                             output.present();
                         }
@@ -236,7 +242,7 @@ fn main() {
                         input_state.translation,
                         input_state.rotation_xyz,
                     );
-                    state.example.update_camera(&state.queue, camera_data);
+                    state.renderer.update_camera(&state.queue, camera_data);
 
                     window.request_redraw();
                 }

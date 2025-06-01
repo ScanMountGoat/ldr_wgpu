@@ -24,7 +24,6 @@ struct RawSceneComponents {
     indices: Vec<u32>,
     geometries: Vec<SceneGeometry>,
     instances: Vec<SceneInstance>,
-    colors: Vec<shader::LDrawColor>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,8 +50,6 @@ struct SceneComponents {
     scene_instances: Vec<SceneInstance>,
 
     bottom_level_acceleration_structures: Vec<wgpu::Blas>,
-
-    colors: wgpu::Buffer,
 }
 
 fn upload_scene_components(
@@ -88,11 +85,6 @@ fn upload_scene_components(
     let geometries = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Geometries"),
         contents: bytemuck::cast_slice(&geometry_buffer_content),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let colors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("LDraw Colors Buffer"),
-        contents: bytemuck::cast_slice(&scene.colors),
         usage: wgpu::BufferUsages::STORAGE,
     });
 
@@ -159,7 +151,6 @@ fn upload_scene_components(
         geometries,
         scene_instances: scene.instances.clone(),
         bottom_level_acceleration_structures,
-        colors,
     }
 }
 
@@ -171,31 +162,17 @@ fn load_scene(
 ) -> SceneComponents {
     let mut scene = RawSceneComponents::default();
 
-    let color_table = ldr_tools::load_color_table(ldraw_path);
-
-    // TODO: How large will this be?
-    // TODO: Reindex colors to only include used colors?
-    scene.colors = vec![shader::LDrawColor { rgba: Vec4::ZERO }; 1024];
-    for (code, color) in color_table {
-        if let Some(scene_color) = scene.colors.get_mut(code as usize) {
-            *scene_color = shader::LDrawColor {
-                rgba: color.rgba_linear.into(),
-            };
-        }
-    }
-
     let start = std::time::Instant::now();
-    let scene_instanced = ldr_tools::load_file_instanced(
-        path,
-        ldraw_path,
-        &[],
-        &ldr_tools::GeometrySettings {
-            triangulate: true,
-            weld_vertices: true,
-            stud_type: ldr_tools::StudType::Normal, // TODO: crashes for datsville with logo4?
-            ..Default::default()
-        },
-    );
+
+    // Weld vertices to take advantage of vertex caching/batching on the GPU.
+    let settings = ldr_tools::GeometrySettings {
+        triangulate: true,
+        weld_vertices: true,
+        stud_type: ldr_tools::StudType::Normal, // TODO: crashes for datsville with logo4?
+        ..Default::default()
+    };
+
+    let scene_instanced = ldr_tools::load_file_instanced(path, ldraw_path, &[], &settings);
     info!("Load LDraw file: {:?}", start.elapsed());
 
     let start = std::time::Instant::now();
@@ -250,9 +227,7 @@ fn load_scene(
             index_count: geometry.vertex_indices.len(),
         });
 
-        // TODO: Also include color/material information?
-        // TODO: Duplicate blas for same part with multiple colors?
-
+        // TODO: Don't duplicate blas for same part with multiple colors?
         for transform in transforms {
             scene.instances.push(SceneInstance {
                 geometry_index,
@@ -281,25 +256,22 @@ fn replace_color(color: ColorCode, current_color: ColorCode) -> ColorCode {
     }
 }
 
-pub struct Example {
-    camera: shader::Camera,
+pub struct Renderer {
     camera_buf: wgpu::Buffer,
-    tlas_package: wgpu::TlasPackage,
     pipeline: wgpu::RenderPipeline,
-    bind_group: shader::bind_groups::BindGroup0,
-    scene_components: SceneComponents,
+    bind_group0: shader::bind_groups::BindGroup0,
 }
 
-impl Example {
+pub struct Scene {
+    bind_group1: shader::bind_groups::BindGroup1,
+}
+
+impl Renderer {
     pub fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
-        path: &str,
         ldraw_path: &str,
     ) -> Self {
-        let scene_components = load_scene(device, queue, path, ldraw_path);
-
         let camera = {
             shader::Camera {
                 view: Mat4::IDENTITY,
@@ -312,38 +284,6 @@ impl Example {
             contents: bytemuck::cast_slice(&[camera]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-
-        let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
-            label: None,
-            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            max_instances: scene_components.scene_instances.len() as u32,
-        });
-
-        let mut tlas_package = wgpu::TlasPackage::new(tlas);
-
-        for (i, instance) in scene_components.scene_instances.iter().enumerate() {
-            let tlas_instance = tlas_package.index_mut(i);
-
-            // TODO: Should each geometry correspond to exactly one blas?
-            let blas_index = instance.geometry_index;
-
-            let transform = instance.transform.transpose().to_cols_array()[..12]
-                .try_into()
-                .unwrap();
-            *tlas_instance = Some(wgpu::TlasInstance::new(
-                &scene_components.bottom_level_acceleration_structures[blas_index],
-                transform,
-                blas_index as u32,
-                0xff,
-            ));
-        }
-
-        // TODO: Build these together?
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&tlas_package));
-        queue.submit(Some(encoder.finish()));
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -376,25 +316,36 @@ impl Example {
             cache: None,
         });
 
-        let bind_group = shader::bind_groups::BindGroup0::from_bindings(
+        let color_table = ldr_tools::load_color_table(ldraw_path);
+
+        // TODO: How large will this be?
+        // TODO: Reindex colors to only include used colors?
+        let mut colors = vec![shader::LDrawColor { rgba: Vec4::ZERO }; 1024];
+        for (code, color) in color_table {
+            if let Some(scene_color) = colors.get_mut(code as usize) {
+                *scene_color = shader::LDrawColor {
+                    rgba: color.rgba_linear.into(),
+                };
+            }
+        }
+        let colors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("LDraw Colors Buffer"),
+            contents: bytemuck::cast_slice(&colors),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let bind_group0 = shader::bind_groups::BindGroup0::from_bindings(
             device,
             shader::bind_groups::BindGroupLayout0 {
                 camera: camera_buf.as_entire_buffer_binding(),
-                colors: scene_components.colors.as_entire_buffer_binding(),
-                vertices: scene_components.vertices.as_entire_buffer_binding(),
-                indices: scene_components.indices.as_entire_buffer_binding(),
-                geometries: scene_components.geometries.as_entire_buffer_binding(),
-                acc_struct: tlas_package.tlas(),
+                colors: colors.as_entire_buffer_binding(),
             },
         );
 
-        Example {
-            camera,
+        Renderer {
             camera_buf,
-            tlas_package,
             pipeline,
-            bind_group,
-            scene_components,
+            bind_group0,
         }
     }
 
@@ -402,7 +353,13 @@ impl Example {
         queue.write_buffer(&self.camera_buf, 0, bytemuck::cast_slice(&[camera_data]));
     }
 
-    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn render(
+        &mut self,
+        view: &wgpu::TextureView,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &Scene,
+    ) {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -422,12 +379,65 @@ impl Example {
         });
 
         pass.set_pipeline(&self.pipeline);
-        self.bind_group.set(&mut pass);
+        self.bind_group0.set(&mut pass);
+
+        scene.bind_group1.set(&mut pass);
+
         pass.draw(0..3, 0..1);
 
         drop(pass);
 
         queue.submit(Some(encoder.finish()));
+    }
+}
+
+impl Scene {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, path: &str, ldraw_path: &str) -> Self {
+        let scene_components = load_scene(device, queue, path, ldraw_path);
+
+        let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
+            label: None,
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+            max_instances: scene_components.scene_instances.len() as u32,
+        });
+
+        let mut tlas_package = wgpu::TlasPackage::new(tlas);
+
+        for (i, instance) in scene_components.scene_instances.iter().enumerate() {
+            let tlas_instance = tlas_package.index_mut(i);
+
+            // TODO: Should each geometry correspond to exactly one blas?
+            let blas_index = instance.geometry_index;
+
+            let transform = instance.transform.transpose().to_cols_array()[..12]
+                .try_into()
+                .unwrap();
+            *tlas_instance = Some(wgpu::TlasInstance::new(
+                &scene_components.bottom_level_acceleration_structures[blas_index],
+                transform,
+                blas_index as u32,
+                0xff,
+            ));
+        }
+
+        // TODO: Build tlas and blas together?
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&tlas_package));
+        queue.submit(Some(encoder.finish()));
+
+        let bind_group1 = shader::bind_groups::BindGroup1::from_bindings(
+            device,
+            shader::bind_groups::BindGroupLayout1 {
+                vertices: scene_components.vertices.as_entire_buffer_binding(),
+                indices: scene_components.indices.as_entire_buffer_binding(),
+                geometries: scene_components.geometries.as_entire_buffer_binding(),
+                acc_struct: tlas_package.tlas(),
+            },
+        );
+
+        Scene { bind_group1 }
     }
 }
 
