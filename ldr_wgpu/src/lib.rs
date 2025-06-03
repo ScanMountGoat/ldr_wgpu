@@ -22,6 +22,7 @@ mod shader {
 struct RawSceneComponents {
     vertices: Vec<shader::Vertex>,
     indices: Vec<u32>,
+    faces: Vec<shader::Face>,
     geometries: Vec<SceneGeometry>,
     instances: Vec<SceneInstance>,
 }
@@ -44,6 +45,7 @@ struct SceneInstance {
 struct SceneComponents {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    faces: wgpu::Buffer,
 
     geometries: wgpu::Buffer,
 
@@ -79,6 +81,13 @@ fn upload_scene_components(
         label: Some("Indices"),
         contents: bytemuck::cast_slice(&scene.indices),
         usage: wgpu::BufferUsages::INDEX
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::BLAS_INPUT,
+    });
+    let faces = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Faces"),
+        contents: bytemuck::cast_slice(&scene.faces),
+        usage: wgpu::BufferUsages::VERTEX
             | wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::BLAS_INPUT,
     });
@@ -149,6 +158,7 @@ fn upload_scene_components(
         vertices,
         indices,
         geometries,
+        faces,
         scene_instances: scene.instances.clone(),
         bottom_level_acceleration_structures,
     }
@@ -187,30 +197,28 @@ fn load_scene(
         let normals = vertex_normals(&geometry.vertices, &geometry.vertex_indices);
 
         for (v, n) in geometry.vertices.iter().zip(&normals) {
+            // Hard surface normals work fine with lower precision.
+            // This allows fitting vertices into a single vec4.
+            let normal_unorm8 = (n * 0.5 + 0.5)
+                .extend(0.0)
+                .to_array()
+                .map(|v| (v * 255.0) as u8);
+
             scene.vertices.push(shader::Vertex {
-                pos: v.extend(0.0),
-                normal: *n,
-                color_code: color_code,
+                pos: *v,
+                normal: u32::from_le_bytes(normal_unorm8),
             });
         }
 
         if geometry.face_colors.len() == 1 {
-            for face in geometry.vertex_indices.chunks_exact(3) {
-                for i in face {
-                    let color = replace_color(geometry.face_colors[0], color_code);
-                    scene.vertices[start_vertex_index + *i as usize].color_code = color;
-                }
+            for _ in 0..geometry.vertex_indices.len() / 3 {
+                let color = replace_color(geometry.face_colors[0], color_code);
+                scene.faces.push(shader::Face { color_code: color });
             }
         } else {
-            for (face, color) in geometry
-                .vertex_indices
-                .chunks_exact(3)
-                .zip(&geometry.face_colors)
-            {
-                for i in face {
-                    let color = replace_color(*color, color_code);
-                    scene.vertices[start_vertex_index + *i as usize].color_code = color;
-                }
+            for color in &geometry.face_colors {
+                let color = replace_color(*color, color_code);
+                scene.faces.push(shader::Face { color_code: color });
             }
         }
 
@@ -432,6 +440,7 @@ impl Scene {
             shader::bind_groups::BindGroupLayout1 {
                 vertices: scene_components.vertices.as_entire_buffer_binding(),
                 indices: scene_components.indices.as_entire_buffer_binding(),
+                faces: scene_components.faces.as_entire_buffer_binding(),
                 geometries: scene_components.geometries.as_entire_buffer_binding(),
                 acc_struct: tlas_package.tlas(),
             },

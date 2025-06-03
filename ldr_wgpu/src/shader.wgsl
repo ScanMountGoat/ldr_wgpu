@@ -28,8 +28,11 @@ struct Camera {
 };
 
 struct Vertex {
-    pos: vec4<f32>,
-    normal: vec3<f32>,
+    pos: vec3<f32>,
+    normal: u32
+};
+
+struct Face {
     color_code: u32
 };
 
@@ -64,9 +67,12 @@ var<storage, read> vertices: array<Vertex>;
 var<storage, read> indices: array<u32>;
 
 @group(1) @binding(2)
-var<storage, read> geometries: array<Geometry>;
+var<storage, read> faces: array<Face>;
 
 @group(1) @binding(3)
+var<storage, read> geometries: array<Geometry>;
+
+@group(1) @binding(4)
 var acc_struct: acceleration_structure;
 
 fn interpolate_bary(v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, bary: vec3<f32>) -> vec3<f32> {
@@ -106,7 +112,12 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
         let bary = vec3<f32>(1.0 - intersection.barycentrics.x - intersection.barycentrics.y, intersection.barycentrics);
 
         let pos = interpolate_bary(v0.pos.xyz, v1.pos.xyz, v2.pos.xyz, bary);
-        let normal_raw = interpolate_bary(v0.normal.xyz, v1.normal.xyz, v2.normal.xyz, bary);
+
+        let n0 = unpack4x8unorm(v0.normal).xyz * 2.0 - 1.0;
+        let n1 = unpack4x8unorm(v1.normal).xyz * 2.0 - 1.0;
+        let n2 = unpack4x8unorm(v2.normal).xyz * 2.0 - 1.0;
+
+        let normal_raw = interpolate_bary(n0, n1, n2, bary);
 
         let world_normal = intersection.object_to_world * vec4(normal_raw, 0.0);
         let view_normal = camera.view * vec4(world_normal.xyz, 0.0);
@@ -117,12 +128,10 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
 
         let n_dot_v = max(dot(normal, view), 0.0);
 
-        // TODO: How to handle attributes that don't interpolate?
-        // TODO: store color codes per face instead of per vertex?
-        let color0 = colors[v0.color_code].rgba;
-        let color1 = colors[v1.color_code].rgba;
-        let color2 = colors[v2.color_code].rgba;
-        let ldraw_color = interpolate_bary(color0.rgb, color1.rgb, color2.rgb, bary);
+        // Colors are defined per face to avoid interpolation.
+        let face_index = intersection.primitive_index + index_start / 3;
+        let color_code = faces[face_index].color_code;
+        let ldraw_color = colors[color_code].rgba;
 
         let color_rgb = ldraw_color.rgb * n_dot_v;
         color = vec4(color_rgb, 1.0);
