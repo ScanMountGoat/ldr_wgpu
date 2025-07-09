@@ -337,7 +337,8 @@ pub fn calculate_camera_data(
     // TODO: Why is this reversed vertically compared to normal?
     let view = glam::Mat4::from_translation(vec3(translation.x, -translation.y, translation.z))
         * glam::Mat4::from_rotation_x(-rotation.x)
-        * glam::Mat4::from_rotation_y(rotation.y);
+        * glam::Mat4::from_rotation_y(rotation.y)
+        * glam::Mat4::from_scale(vec3(-1.0, 1.0, 1.0));
 
     // TODO: Does this even matter for draw distance?
     let projection = glam::Mat4::perspective_rh(FOV_Y, aspect, 0.001, 10000.0);
