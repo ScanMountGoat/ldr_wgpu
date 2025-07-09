@@ -123,7 +123,7 @@ fn calculate_color(intersection: RayIntersection) -> vec4<f32> {
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     var color = vec3(0.0);
-    var tranmission = 1.0;
+    var transmission = 1.0;
 
     let d = vertex.tex_coords * 2.0 - 1.0;
 
@@ -140,27 +140,21 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     rayQueryProceed(&rq);
     var intersection = rayQueryGetCommittedIntersection(&rq);
 
-    var i = 0;
     while intersection.kind != RAY_QUERY_INTERSECTION_NONE {
-        // Limit max intersections for performance reasons.
-        if i > 8 {
-            break;
-        }
-
         // Blend with the "under" operator since we trace front to back.
         // https://interplayoflight.wordpress.com/2023/07/15/raytraced-order-independent-transparency/
         let new_color = calculate_color(intersection);
-        color += tranmission * new_color.a * new_color.rgb;
-        tranmission *= (1.0 - new_color.a);
+        color += transmission * new_color.a * new_color.rgb;
+        transmission *= (1.0 - new_color.a);
 
-        if tranmission > 0.01 {
+        if transmission > 0.01 {
             origin += intersection.t * direction;
             rayQueryInitialize(&rq, acc_struct, RayDesc(flags, 0xFFu, 0.1, 100000.0, origin, direction));
             rayQueryProceed(&rq);
             intersection = rayQueryGetCommittedIntersection(&rq);
+        } else {
+            break;
         }
-
-        i += 1;
     }
 
     return vec4(color, 1.0);
