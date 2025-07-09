@@ -79,63 +79,89 @@ fn interpolate_bary(v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, bary: vec3<f32>
     return v0 * bary.x + v1 * bary.y + v2 * bary.z;
 }
 
+fn calculate_color(intersection: RayIntersection) -> vec4<f32> {
+    // The blas geometry index is stored in the custom data field.
+    let geometry = geometries[intersection.instance_custom_data];
+
+    let index_start = geometry.index_start_index;
+    let vertex_start = geometry.vertex_start_index;
+
+    let first_index_index = intersection.primitive_index * 3u + index_start;
+
+    let v0 = vertices[vertex_start + indices[first_index_index + 0u] ];
+    let v1 = vertices[vertex_start + indices[first_index_index + 1u] ];
+    let v2 = vertices[vertex_start + indices[first_index_index + 2u] ];
+
+    let bary = vec3<f32>(1.0 - intersection.barycentrics.x - intersection.barycentrics.y, intersection.barycentrics);
+
+    let pos = interpolate_bary(v0.pos.xyz, v1.pos.xyz, v2.pos.xyz, bary);
+
+    let n0 = unpack4x8unorm(v0.normal).xyz * 2.0 - 1.0;
+    let n1 = unpack4x8unorm(v1.normal).xyz * 2.0 - 1.0;
+    let n2 = unpack4x8unorm(v2.normal).xyz * 2.0 - 1.0;
+
+    let normal_raw = interpolate_bary(n0, n1, n2, bary);
+
+    var world_normal = intersection.object_to_world * vec4(normal_raw, 0.0);
+    let view_normal = camera.view * vec4(world_normal.xyz, 0.0);
+    let normal = normalize(view_normal.xyz);
+
+    // Normals are now in view space, so the view vector is simple.
+    let view = vec3(0.0, 0.0, 1.0);
+
+    let n_dot_v = max(dot(normal, view), 0.0);
+
+    // Colors are defined per face to avoid interpolation.
+    let face_index = intersection.primitive_index + index_start / 3;
+    let color_code = faces[face_index].color_code;
+    let ldraw_color = colors[color_code].rgba;
+
+    let color_rgb = ldraw_color.rgb * n_dot_v;
+    return vec4(color_rgb, ldraw_color.a);
+}
+
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
-    var color = vec4(0.0);
+    var color = vec3(0.0);
+    var tranmission = 1.0;
 
     let d = vertex.tex_coords * 2.0 - 1.0;
 
-    let origin = (camera.view_inv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    var origin = (camera.view_inv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     let temp = camera.proj_inv * vec4(d.x, d.y, 1.0, 1.0);
     let direction = (camera.view_inv * vec4(normalize(temp.xyz), 0.0)).xyz;
 
-    // TODO: max draw distance?
     var rq: ray_query;
-    rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0xFFu, 0.1, 100000.0, origin, direction));
+    
+    // TODO: trace_ray function?
+    // TODO: max draw distance?
+    let flags = 0x10u; // cull back facing
+    rayQueryInitialize(&rq, acc_struct, RayDesc(flags, 0xFFu, 0.1, 100000.0, origin, direction));
     rayQueryProceed(&rq);
+    var intersection = rayQueryGetCommittedIntersection(&rq);
 
-    // TODO: Multiple samples per pixel for less aliasing.
-    let intersection = rayQueryGetCommittedIntersection(&rq);
-    if intersection.kind != RAY_QUERY_INTERSECTION_NONE {
-        // The blas geometry index is stored in the custom data field.
-        let geometry = geometries[intersection.instance_custom_data];
+    var i = 0;
+    while intersection.kind != RAY_QUERY_INTERSECTION_NONE {
+        // Limit max intersections for performance reasons.
+        if i > 8 {
+            break;
+        }
 
-        let index_start = geometry.index_start_index;
-        let vertex_start = geometry.vertex_start_index;
+        // Blend with the "under" operator since we trace front to back.
+        // https://interplayoflight.wordpress.com/2023/07/15/raytraced-order-independent-transparency/
+        let new_color = calculate_color(intersection);
+        color += tranmission * new_color.a * new_color.rgb;
+        tranmission *= (1.0 - new_color.a);
 
-        let first_index_index = intersection.primitive_index * 3u + index_start;
+        if tranmission > 0.01 {
+            origin += intersection.t * direction;
+            rayQueryInitialize(&rq, acc_struct, RayDesc(flags, 0xFFu, 0.1, 100000.0, origin, direction));
+            rayQueryProceed(&rq);
+            intersection = rayQueryGetCommittedIntersection(&rq);
+        }
 
-        let v0 = vertices[vertex_start + indices[first_index_index + 0u] ];
-        let v1 = vertices[vertex_start + indices[first_index_index + 1u] ];
-        let v2 = vertices[vertex_start + indices[first_index_index + 2u] ];
-
-        let bary = vec3<f32>(1.0 - intersection.barycentrics.x - intersection.barycentrics.y, intersection.barycentrics);
-
-        let pos = interpolate_bary(v0.pos.xyz, v1.pos.xyz, v2.pos.xyz, bary);
-
-        let n0 = unpack4x8unorm(v0.normal).xyz * 2.0 - 1.0;
-        let n1 = unpack4x8unorm(v1.normal).xyz * 2.0 - 1.0;
-        let n2 = unpack4x8unorm(v2.normal).xyz * 2.0 - 1.0;
-
-        let normal_raw = interpolate_bary(n0, n1, n2, bary);
-
-        let world_normal = intersection.object_to_world * vec4(normal_raw, 0.0);
-        let view_normal = camera.view * vec4(world_normal.xyz, 0.0);
-        let normal = normalize(view_normal.xyz);
-
-        // Normals are now in view space, so the view vector is simple.
-        let view = vec3(0.0, 0.0, 1.0);
-
-        let n_dot_v = max(dot(normal, view), 0.0);
-
-        // Colors are defined per face to avoid interpolation.
-        let face_index = intersection.primitive_index + index_start / 3;
-        let color_code = faces[face_index].color_code;
-        let ldraw_color = colors[color_code].rgba;
-
-        let color_rgb = ldraw_color.rgb * n_dot_v;
-        color = vec4(color_rgb, 1.0);
+        i += 1;
     }
 
-    return color;
+    return vec4(color, 1.0);
 }
