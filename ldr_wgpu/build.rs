@@ -2,7 +2,8 @@ use wgsl_to_wgpu::{create_shader_module_embedded, MatrixVectorTypes, WriteOption
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
-    write_shader("src/shader.wgsl", format!("{out_dir}/shader.rs"));
+    write_shader("src/shader/shader.wgsl", format!("{out_dir}/shader.rs"));
+    write_shader("src/shader/blit.wgsl", format!("{out_dir}/blit.rs"));
 }
 
 fn write_shader(wgsl_path: &str, output_path: String) {

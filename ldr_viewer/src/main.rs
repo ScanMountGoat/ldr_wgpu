@@ -72,7 +72,7 @@ impl<'a> State<'a> {
         };
         surface.configure(&device, &config);
 
-        let example = Renderer::new(&device, config.format, ldraw_path);
+        let example = Renderer::new(&device, size.width, size.height, config.format, ldraw_path);
         let scene = Scene::new(&device, &queue, path, ldraw_path);
 
         Self {
@@ -206,6 +206,10 @@ fn main() {
                         input_state.rotation_xyz,
                     );
                     state.renderer.update_camera(&state.queue, camera_data);
+
+                    state
+                        .renderer
+                        .resize(&state.device, size.width, size.height);
 
                     window.request_redraw();
                 }

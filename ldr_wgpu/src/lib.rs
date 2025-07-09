@@ -1,8 +1,7 @@
-use glam::{vec3, Mat4, Vec4};
+use glam::{vec3, Mat4};
 use ldr_tools::ColorCode;
 use log::info;
 use normal::vertex_normals;
-use std::borrow::Cow;
 use std::ops::IndexMut;
 use wgpu::util::DeviceExt;
 
@@ -12,17 +11,25 @@ pub const REQUIRED_FEATURES: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_Q
     .union(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
 
 mod normal;
+mod renderer;
+
+pub use renderer::Renderer;
 
 #[allow(dead_code)]
 mod shader {
-    include!(concat!(env!("OUT_DIR"), "/shader.rs"));
+    pub mod blit {
+        include!(concat!(env!("OUT_DIR"), "/blit.rs"));
+    }
+    pub mod shader {
+        include!(concat!(env!("OUT_DIR"), "/shader.rs"));
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 struct RawSceneComponents {
-    vertices: Vec<shader::Vertex>,
+    vertices: Vec<shader::shader::Vertex>,
     indices: Vec<u32>,
-    faces: Vec<shader::Face>,
+    faces: Vec<shader::shader::Face>,
     geometries: Vec<SceneGeometry>,
     instances: Vec<SceneInstance>,
 }
@@ -62,7 +69,7 @@ fn upload_scene_components(
     let geometry_buffer_content = scene
         .geometries
         .iter()
-        .map(|geometry| shader::Geometry {
+        .map(|geometry| shader::shader::Geometry {
             vertex_start_index: geometry.vertex_start_index as u32,
             index_start_index: geometry.index_start_index as u32,
             _pad1: 0,
@@ -133,7 +140,7 @@ fn upload_scene_components(
                 size,
                 vertex_buffer: &vertices,
                 first_vertex: geometry.vertex_start_index as u32,
-                vertex_stride: std::mem::size_of::<shader::Vertex>() as u64,
+                vertex_stride: std::mem::size_of::<shader::shader::Vertex>() as u64,
                 index_buffer: Some(&indices),
                 first_index: Some(geometry.index_start_index as u32),
                 transform_buffer: None,
@@ -204,7 +211,7 @@ fn load_scene(
                 .to_array()
                 .map(|v| (v * 255.0) as u8);
 
-            scene.vertices.push(shader::Vertex {
+            scene.vertices.push(shader::shader::Vertex {
                 pos: *v,
                 normal: u32::from_le_bytes(normal_unorm8),
             });
@@ -213,12 +220,12 @@ fn load_scene(
         if geometry.face_colors.len() == 1 {
             for _ in 0..geometry.vertex_indices.len() / 3 {
                 let color = replace_color(geometry.face_colors[0], color_code);
-                scene.faces.push(shader::Face { color_code: color });
+                scene.faces.push(shader::shader::Face { color_code: color });
             }
         } else {
             for color in &geometry.face_colors {
                 let color = replace_color(*color, color_code);
-                scene.faces.push(shader::Face { color_code: color });
+                scene.faces.push(shader::shader::Face { color_code: color });
             }
         }
 
@@ -264,139 +271,8 @@ fn replace_color(color: ColorCode, current_color: ColorCode) -> ColorCode {
     }
 }
 
-pub struct Renderer {
-    camera_buf: wgpu::Buffer,
-    pipeline: wgpu::RenderPipeline,
-    bind_group0: shader::bind_groups::BindGroup0,
-}
-
 pub struct Scene {
-    bind_group1: shader::bind_groups::BindGroup1,
-}
-
-impl Renderer {
-    pub fn new(
-        device: &wgpu::Device,
-        surface_format: wgpu::TextureFormat,
-        ldraw_path: &str,
-    ) -> Self {
-        let camera = {
-            shader::Camera {
-                view: Mat4::IDENTITY,
-                view_inv: Mat4::IDENTITY,
-                proj_inv: Mat4::IDENTITY,
-            }
-        };
-        let camera_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: bytemuck::cast_slice(&[camera]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
-        });
-
-        let layout = shader::create_pipeline_layout(device);
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(surface_format.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let color_table = ldr_tools::load_color_table(ldraw_path);
-
-        // TODO: How large will this be?
-        // TODO: Reindex colors to only include used colors?
-        let mut colors = vec![shader::LDrawColor { rgba: Vec4::ZERO }; 1024];
-        for (code, color) in color_table {
-            if let Some(scene_color) = colors.get_mut(code as usize) {
-                *scene_color = shader::LDrawColor {
-                    rgba: color.rgba_linear.into(),
-                };
-            }
-        }
-        let colors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("LDraw Colors Buffer"),
-            contents: bytemuck::cast_slice(&colors),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
-        let bind_group0 = shader::bind_groups::BindGroup0::from_bindings(
-            device,
-            shader::bind_groups::BindGroupLayout0 {
-                camera: camera_buf.as_entire_buffer_binding(),
-                colors: colors.as_entire_buffer_binding(),
-            },
-        );
-
-        Renderer {
-            camera_buf,
-            pipeline,
-            bind_group0,
-        }
-    }
-
-    pub fn update_camera(&self, queue: &wgpu::Queue, camera_data: shader::Camera) {
-        queue.write_buffer(&self.camera_buf, 0, bytemuck::cast_slice(&[camera_data]));
-    }
-
-    pub fn render(
-        &mut self,
-        view: &wgpu::TextureView,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scene: &Scene,
-    ) {
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_pipeline(&self.pipeline);
-        self.bind_group0.set(&mut pass);
-
-        scene.bind_group1.set(&mut pass);
-
-        pass.draw(0..3, 0..1);
-
-        drop(pass);
-
-        queue.submit(Some(encoder.finish()));
-    }
+    bind_group1: shader::shader::bind_groups::BindGroup1,
 }
 
 impl Scene {
@@ -435,9 +311,9 @@ impl Scene {
         encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&tlas_package));
         queue.submit(Some(encoder.finish()));
 
-        let bind_group1 = shader::bind_groups::BindGroup1::from_bindings(
+        let bind_group1 = shader::shader::bind_groups::BindGroup1::from_bindings(
             device,
-            shader::bind_groups::BindGroupLayout1 {
+            shader::shader::bind_groups::BindGroupLayout1 {
                 vertices: scene_components.vertices.as_entire_buffer_binding(),
                 indices: scene_components.indices.as_entire_buffer_binding(),
                 faces: scene_components.faces.as_entire_buffer_binding(),
@@ -455,7 +331,7 @@ pub fn calculate_camera_data(
     height: u32,
     translation: glam::Vec3,
     rotation: glam::Vec3,
-) -> shader::Camera {
+) -> shader::shader::Camera {
     let aspect = width as f32 / height as f32;
 
     // TODO: Why is this reversed vertically compared to normal?
@@ -466,7 +342,7 @@ pub fn calculate_camera_data(
     // TODO: Does this even matter for draw distance?
     let projection = glam::Mat4::perspective_rh(FOV_Y, aspect, 0.001, 10000.0);
 
-    shader::Camera {
+    shader::shader::Camera {
         view: view,
         view_inv: view.inverse(),
         proj_inv: projection.inverse(),

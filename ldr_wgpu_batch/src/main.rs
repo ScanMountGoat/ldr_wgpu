@@ -71,7 +71,7 @@ fn main() {
     let rotation_xyz = Vec3::ZERO;
     let camera_data = calculate_camera_data(WIDTH, HEIGHT, translation, rotation_xyz);
 
-    let mut renderer = ldr_wgpu::Renderer::new(&device, format, ldraw_path);
+    let mut renderer = ldr_wgpu::Renderer::new(&device, WIDTH, HEIGHT, format, ldraw_path);
     renderer.update_camera(&queue, camera_data);
 
     let start = std::time::Instant::now();
