@@ -1,4 +1,4 @@
-use glam::{vec3, Mat4};
+use glam::{vec3, vec4, Mat4, Vec4};
 use ldr_tools::ColorCode;
 use log::info;
 use normal::vertex_normals;
@@ -32,6 +32,7 @@ struct RawSceneComponents {
     vertices: Vec<shader::shader::Vertex>,
     indices: Vec<u32>,
     faces: Vec<shader::shader::Face>,
+    uvs: Vec<Vec4>,
     geometries: Vec<SceneGeometry>,
     instances: Vec<SceneInstance>,
     images: Vec<image::RgbaImage>,
@@ -56,6 +57,7 @@ struct SceneComponents {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     faces: wgpu::Buffer,
+    uvs: wgpu::Buffer,
 
     geometries: wgpu::Buffer,
 
@@ -99,9 +101,12 @@ fn upload_scene_components(
     let faces = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Faces"),
         contents: bytemuck::cast_slice(&scene.faces),
-        usage: wgpu::BufferUsages::VERTEX
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::BLAS_INPUT,
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let uvs = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("UVs"),
+        contents: bytemuck::cast_slice(&scene.uvs),
+        usage: wgpu::BufferUsages::STORAGE,
     });
     let geometries = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Geometries"),
@@ -177,6 +182,7 @@ fn upload_scene_components(
         indices,
         geometries,
         faces,
+        uvs,
         scene_instances: scene.instances.clone(),
         bottom_level_acceleration_structures,
         textures,
@@ -242,8 +248,21 @@ impl RawSceneComponents {
             scene.add_faces(color_code, geometry);
 
             let start_index_index = scene.indices.len();
-            for i in &geometry.vertex_indices {
-                scene.indices.push(*i);
+            scene.indices.extend_from_slice(&geometry.vertex_indices);
+
+            // UVs are defined per vertex in each face.
+            match &geometry.texture_info {
+                Some(info) => {
+                    scene
+                        .uvs
+                        .extend(info.uvs.iter().map(|v| vec4(v.x, 1.0 - v.y, 0.0, 0.0)));
+                }
+                None => {
+                    scene.uvs.extend(std::iter::repeat_n(
+                        Vec4::ZERO,
+                        geometry.vertex_indices.len(),
+                    ));
+                }
             }
 
             let geometry_index = scene.geometries.len();
@@ -271,13 +290,7 @@ impl RawSceneComponents {
     fn add_vertices(&mut self, geometry: &ldr_tools::LDrawGeometry) {
         let normals = vertex_normals(&geometry.vertices, &geometry.vertex_indices);
 
-        let uvs = geometry
-            .texture_info
-            .as_ref()
-            .map(|info| info.uvs.as_slice())
-            .unwrap_or_default();
-
-        for (i, (v, n)) in geometry.vertices.iter().zip(&normals).enumerate() {
+        for (v, n) in geometry.vertices.iter().zip(&normals) {
             // Hard surface normals work fine with lower precision.
             // This allows fitting vertices into a single vec4.
             let normal_unorm8 = (n * 0.5 + 0.5)
@@ -288,12 +301,6 @@ impl RawSceneComponents {
             self.vertices.push(shader::shader::Vertex {
                 pos: *v,
                 normal: u32::from_le_bytes(normal_unorm8),
-                uv: uvs
-                    .get(i)
-                    .copied()
-                    .unwrap_or_default()
-                    .extend(0.0)
-                    .extend(0.0),
             });
         }
     }
@@ -392,6 +399,7 @@ impl Scene {
                 vertices: scene_components.vertices.as_entire_buffer_binding(),
                 indices: scene_components.indices.as_entire_buffer_binding(),
                 faces: scene_components.faces.as_entire_buffer_binding(),
+                uvs: scene_components.uvs.as_entire_buffer_binding(),
                 geometries: scene_components.geometries.as_entire_buffer_binding(),
                 textures: &textures,
                 acc_struct: tlas_package.tlas(),
@@ -420,7 +428,7 @@ pub fn calculate_camera_data(
     let projection = glam::Mat4::perspective_rh(FOV_Y, aspect, 0.001, 10000.0);
 
     shader::shader::Camera {
-        view: view,
+        view,
         view_inv: view.inverse(),
         proj_inv: projection.inverse(),
     }
@@ -448,7 +456,7 @@ fn image_texture(
             view_formats: &[],
         },
         wgpu::util::TextureDataOrder::LayerMajor,
-        &image.as_raw(),
+        image.as_raw(),
     );
 
     texture.create_view(&Default::default())

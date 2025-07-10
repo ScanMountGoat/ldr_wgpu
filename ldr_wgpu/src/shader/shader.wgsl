@@ -30,7 +30,6 @@ struct Camera {
 struct Vertex {
     pos: vec3<f32>,
     normal: u32,
-    uv: vec4<f32>,
 };
 
 struct Face {
@@ -75,14 +74,17 @@ var<storage, read> indices: array<u32>;
 var<storage, read> faces: array<Face>;
 
 @group(1) @binding(3)
+var<storage, read> uvs: array<vec4<f32>>;
+
+@group(1) @binding(4)
 var<storage, read> geometries: array<Geometry>;
 
 const TEXTURE_COUNT: u32 = 4u;
 
-@group(1) @binding(4)
+@group(1) @binding(5)
 var textures: binding_array<texture_2d<f32>, TEXTURE_COUNT>;
 
-@group(1) @binding(5)
+@group(1) @binding(6)
 var acc_struct: acceleration_structure;
 
 fn interpolate_bary(v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, bary: vec3<f32>) -> vec3<f32> {
@@ -98,9 +100,12 @@ fn calculate_color(intersection: RayIntersection) -> vec4<f32> {
 
     let first_index_index = intersection.primitive_index * 3u + index_start;
 
-    let v0 = vertices[vertex_start + indices[first_index_index + 0u] ];
-    let v1 = vertices[vertex_start + indices[first_index_index + 1u] ];
-    let v2 = vertices[vertex_start + indices[first_index_index + 2u] ];
+    let i0 = vertex_start + indices[first_index_index + 0u];
+    let i1 = vertex_start + indices[first_index_index + 1u];
+    let i2 = vertex_start + indices[first_index_index + 2u];
+    let v0 = vertices[i0];
+    let v1 = vertices[i1];
+    let v2 = vertices[i2];
 
     let bary = vec3<f32>(1.0 - intersection.barycentrics.x - intersection.barycentrics.y, intersection.barycentrics);
 
@@ -126,13 +131,16 @@ fn calculate_color(intersection: RayIntersection) -> vec4<f32> {
     let color_code = faces[face_index].color_code;
     let ldraw_color = colors[color_code].rgba;
 
-    let uv = interpolate_bary(v0.uv.xyz, v1.uv.xyz, v2.uv.xyz, bary);
+    // UVs are defined per vertex in each face.
+    let uv0 = uvs[first_index_index + 0].xyz;
+    let uv1 = uvs[first_index_index + 1].xyz;
+    let uv2 = uvs[first_index_index + 2].xyz;
+    let uv = interpolate_bary(uv0, uv1, uv2, bary);
 
     var color_rgb = ldraw_color.rgb;
 
     let texture_index = faces[face_index].texture_index;
     if texture_index >= 0 && texture_index < i32(TEXTURE_COUNT) {
-        // TODO: UVs don't work properly?
         let texture_color = textureSample(textures[texture_index], color_sampler, uv.xy);
         color_rgb = mix(color_rgb, texture_color.rgb, texture_color.a);
     }

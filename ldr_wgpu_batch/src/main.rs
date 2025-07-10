@@ -90,7 +90,7 @@ fn main() {
             println!("{path:?}");
 
             let start = std::time::Instant::now();
-            let scene = ldr_wgpu::Scene::new(&device, &queue, &ldraw_path, path_str);
+            let scene = ldr_wgpu::Scene::new(&device, &queue, ldraw_path, path_str);
             info!("Load scene: {:?}", start.elapsed());
 
             renderer.render(&output_view, &device, &queue, &scene);
