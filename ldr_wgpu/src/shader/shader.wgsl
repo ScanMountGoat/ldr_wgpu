@@ -29,11 +29,13 @@ struct Camera {
 
 struct Vertex {
     pos: vec3<f32>,
-    normal: u32
+    normal: u32,
+    uv: vec4<f32>,
 };
 
 struct Face {
-    color_code: u32
+    color_code: u32,
+    texture_index: i32
 };
 
 struct Material {
@@ -60,6 +62,9 @@ var<uniform> camera: Camera;
 @group(0) @binding(1)
 var<storage, read> colors: array<LDrawColor>;
 
+@group(0) @binding(2)
+var color_sampler: sampler;
+
 @group(1) @binding(0)
 var<storage, read> vertices: array<Vertex>;
 
@@ -72,7 +77,12 @@ var<storage, read> faces: array<Face>;
 @group(1) @binding(3)
 var<storage, read> geometries: array<Geometry>;
 
+const TEXTURE_COUNT: u32 = 4u;
+
 @group(1) @binding(4)
+var textures: binding_array<texture_2d<f32>, TEXTURE_COUNT>;
+
+@group(1) @binding(5)
 var acc_struct: acceleration_structure;
 
 fn interpolate_bary(v0: vec3<f32>, v1: vec3<f32>, v2: vec3<f32>, bary: vec3<f32>) -> vec3<f32> {
@@ -116,8 +126,18 @@ fn calculate_color(intersection: RayIntersection) -> vec4<f32> {
     let color_code = faces[face_index].color_code;
     let ldraw_color = colors[color_code].rgba;
 
-    let color_rgb = ldraw_color.rgb * n_dot_v;
-    return vec4(color_rgb, ldraw_color.a);
+    let uv = interpolate_bary(v0.uv.xyz, v1.uv.xyz, v2.uv.xyz, bary);
+
+    var color_rgb = ldraw_color.rgb;
+
+    let texture_index = faces[face_index].texture_index;
+    if texture_index >= 0 && texture_index < i32(TEXTURE_COUNT) {
+        // TODO: UVs don't work properly?
+        let texture_color = textureSample(textures[texture_index], color_sampler, uv.xy);
+        color_rgb = mix(color_rgb, texture_color.rgb, texture_color.a);
+    }
+
+    return vec4(color_rgb * n_dot_v, ldraw_color.a);
 }
 
 @fragment

@@ -8,7 +8,9 @@ use wgpu::util::DeviceExt;
 pub const FOV_Y: f32 = 0.5;
 
 pub const REQUIRED_FEATURES: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_QUERY
-    .union(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE);
+    .union(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE)
+    .union(wgpu::Features::TEXTURE_BINDING_ARRAY)
+    .union(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
 
 mod normal;
 mod renderer;
@@ -32,6 +34,7 @@ struct RawSceneComponents {
     faces: Vec<shader::shader::Face>,
     geometries: Vec<SceneGeometry>,
     instances: Vec<SceneInstance>,
+    images: Vec<image::RgbaImage>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -59,6 +62,8 @@ struct SceneComponents {
     scene_instances: Vec<SceneInstance>,
 
     bottom_level_acceleration_structures: Vec<wgpu::Blas>,
+
+    textures: Vec<wgpu::TextureView>,
 }
 
 fn upload_scene_components(
@@ -103,6 +108,12 @@ fn upload_scene_components(
         contents: bytemuck::cast_slice(&geometry_buffer_content),
         usage: wgpu::BufferUsages::STORAGE,
     });
+
+    let textures = scene
+        .images
+        .iter()
+        .map(|i| image_texture(device, queue, i))
+        .collect();
 
     let (size_descriptors, bottom_level_acceleration_structures): (Vec<_>, Vec<_>) = scene
         .geometries
@@ -168,6 +179,7 @@ fn upload_scene_components(
         faces,
         scene_instances: scene.instances.clone(),
         bottom_level_acceleration_structures,
+        textures,
     }
 }
 
@@ -177,79 +189,21 @@ fn load_scene(
     path: &str,
     ldraw_path: &str,
 ) -> SceneComponents {
-    let mut scene = RawSceneComponents::default();
-
     let start = std::time::Instant::now();
 
     // Weld vertices to take advantage of vertex caching/batching on the GPU.
     let settings = ldr_tools::GeometrySettings {
         triangulate: true,
         weld_vertices: true,
-        stud_type: ldr_tools::StudType::Normal, // TODO: crashes for datsville with logo4?
+        stud_type: ldr_tools::StudType::Normal, // TODO: exceeds max buffer size for datsville with logo4
         ..Default::default()
     };
-
     let scene_instanced = ldr_tools::load_file_instanced(path, ldraw_path, &[], &settings);
     info!("Load LDraw file: {:?}", start.elapsed());
 
     let start = std::time::Instant::now();
 
-    // TODO: should each geometry correspond to exactly one blas?
-    // TODO: Process these in parallel?
-    for ((name, color_code), transforms) in scene_instanced.geometry_world_transforms {
-        let geometry = &scene_instanced.geometry_cache[&name];
-
-        let start_vertex_index = scene.vertices.len();
-
-        let normals = vertex_normals(&geometry.vertices, &geometry.vertex_indices);
-
-        for (v, n) in geometry.vertices.iter().zip(&normals) {
-            // Hard surface normals work fine with lower precision.
-            // This allows fitting vertices into a single vec4.
-            let normal_unorm8 = (n * 0.5 + 0.5)
-                .extend(0.0)
-                .to_array()
-                .map(|v| (v * 255.0) as u8);
-
-            scene.vertices.push(shader::shader::Vertex {
-                pos: *v,
-                normal: u32::from_le_bytes(normal_unorm8),
-            });
-        }
-
-        if geometry.face_colors.len() == 1 {
-            for _ in 0..geometry.vertex_indices.len() / 3 {
-                let color = replace_color(geometry.face_colors[0], color_code);
-                scene.faces.push(shader::shader::Face { color_code: color });
-            }
-        } else {
-            for color in &geometry.face_colors {
-                let color = replace_color(*color, color_code);
-                scene.faces.push(shader::shader::Face { color_code: color });
-            }
-        }
-
-        let start_index_index = scene.indices.len();
-        for i in &geometry.vertex_indices {
-            scene.indices.push(*i);
-        }
-
-        let geometry_index = scene.geometries.len();
-        scene.geometries.push(SceneGeometry {
-            vertex_start_index: start_vertex_index,
-            vertex_count: geometry.vertices.len(),
-            index_start_index: start_index_index,
-            index_count: geometry.vertex_indices.len(),
-        });
-
-        // TODO: Don't duplicate blas for same part with multiple colors?
-        for transform in transforms {
-            scene.instances.push(SceneInstance {
-                geometry_index,
-                transform,
-            });
-        }
-    }
+    let scene = RawSceneComponents::new(scene_instanced);
 
     let components = upload_scene_components(device, queue, &scene);
 
@@ -262,6 +216,120 @@ fn load_scene(
     components
 }
 
+impl RawSceneComponents {
+    fn new(scene_instanced: ldr_tools::LDrawSceneInstanced) -> Self {
+        let mut scene = Self::default();
+
+        // TODO: should each geometry correspond to exactly one blas?
+        // TODO: Process these in parallel?
+        for ((name, color_code), transforms) in scene_instanced.geometry_world_transforms {
+            let geometry = &scene_instanced.geometry_cache[&name];
+
+            if let Some(info) = &geometry.texture_info {
+                for png_bytes in &info.textures {
+                    // TODO: The texture indices need to be remapped for per scene images.
+                    let image =
+                        image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
+                            .unwrap()
+                            .into_rgba8();
+                    scene.images.push(image);
+                }
+            }
+
+            let start_vertex_index = scene.vertices.len();
+            scene.add_vertices(geometry);
+
+            scene.add_faces(color_code, geometry);
+
+            let start_index_index = scene.indices.len();
+            for i in &geometry.vertex_indices {
+                scene.indices.push(*i);
+            }
+
+            let geometry_index = scene.geometries.len();
+            scene.geometries.push(SceneGeometry {
+                vertex_start_index: start_vertex_index,
+                vertex_count: geometry.vertices.len(),
+                index_start_index: start_index_index,
+                index_count: geometry.vertex_indices.len(),
+            });
+
+            // TODO: Don't duplicate blas for same part with multiple colors?
+            for transform in transforms {
+                scene.instances.push(SceneInstance {
+                    geometry_index,
+                    transform,
+                });
+            }
+
+            // TODO: images are per geometry but need to be per scene for ray tracing.
+        }
+
+        scene
+    }
+
+    fn add_vertices(&mut self, geometry: &ldr_tools::LDrawGeometry) {
+        let normals = vertex_normals(&geometry.vertices, &geometry.vertex_indices);
+
+        let uvs = geometry
+            .texture_info
+            .as_ref()
+            .map(|info| info.uvs.as_slice())
+            .unwrap_or_default();
+
+        for (i, (v, n)) in geometry.vertices.iter().zip(&normals).enumerate() {
+            // Hard surface normals work fine with lower precision.
+            // This allows fitting vertices into a single vec4.
+            let normal_unorm8 = (n * 0.5 + 0.5)
+                .extend(0.0)
+                .to_array()
+                .map(|v| (v * 255.0) as u8);
+
+            self.vertices.push(shader::shader::Vertex {
+                pos: *v,
+                normal: u32::from_le_bytes(normal_unorm8),
+                uv: uvs
+                    .get(i)
+                    .copied()
+                    .unwrap_or_default()
+                    .extend(0.0)
+                    .extend(0.0),
+            });
+        }
+    }
+
+    fn add_faces(&mut self, color_code: u32, geometry: &ldr_tools::LDrawGeometry) {
+        let texture_indices = geometry
+            .texture_info
+            .as_ref()
+            .map(|info| info.indices.as_slice())
+            .unwrap_or_default();
+
+        if geometry.face_colors.len() == 1 {
+            for i in 0..geometry.vertex_indices.len() / 3 {
+                let color = replace_color(geometry.face_colors[0], color_code);
+                self.faces.push(shader::shader::Face {
+                    color_code: color,
+                    texture_index: texture_indices
+                        .get(i)
+                        .map(|u| (*u as i8) as i32)
+                        .unwrap_or(-1),
+                });
+            }
+        } else {
+            for (i, color) in geometry.face_colors.iter().enumerate() {
+                let color = replace_color(*color, color_code);
+                self.faces.push(shader::shader::Face {
+                    color_code: color,
+                    texture_index: texture_indices
+                        .get(i)
+                        .map(|u| (*u as i8) as i32)
+                        .unwrap_or(-1),
+                });
+            }
+        }
+    }
+}
 fn replace_color(color: ColorCode, current_color: ColorCode) -> ColorCode {
     // TODO: Make this part of ldr_tools
     if color == 16 {
@@ -311,6 +379,13 @@ impl Scene {
         encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&tlas_package));
         queue.submit(Some(encoder.finish()));
 
+        let default_texture = default_black_texture(device, queue);
+
+        let mut textures = [&default_texture; shader::shader::TEXTURE_COUNT as usize];
+        for (t, texture) in textures.iter_mut().zip(&scene_components.textures) {
+            *t = texture;
+        }
+
         let bind_group1 = shader::shader::bind_groups::BindGroup1::from_bindings(
             device,
             shader::shader::bind_groups::BindGroupLayout1 {
@@ -318,6 +393,7 @@ impl Scene {
                 indices: scene_components.indices.as_entire_buffer_binding(),
                 faces: scene_components.faces.as_entire_buffer_binding(),
                 geometries: scene_components.geometries.as_entire_buffer_binding(),
+                textures: &textures,
                 acc_struct: tlas_package.tlas(),
             },
         );
@@ -348,4 +424,56 @@ pub fn calculate_camera_data(
         view_inv: view.inverse(),
         proj_inv: projection.inverse(),
     }
+}
+
+fn image_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    image: &image::RgbaImage,
+) -> wgpu::TextureView {
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("image"),
+            size: wgpu::Extent3d {
+                width: image.width(),
+                height: image.height(),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &image.as_raw(),
+    );
+
+    texture.create_view(&Default::default())
+}
+
+fn default_black_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("DEFAULT_TEXTURE"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        &[0u8; 4 * 4 * 4],
+    );
+
+    texture.create_view(&Default::default())
 }

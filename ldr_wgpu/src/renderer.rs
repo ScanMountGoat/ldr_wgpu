@@ -55,20 +55,23 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        let bind_group0 = crate::shader::shader::bind_groups::BindGroup0::from_bindings(
-            device,
-            crate::shader::shader::bind_groups::BindGroupLayout0 {
-                camera: camera_buf.as_entire_buffer_binding(),
-                colors: colors.as_entire_buffer_binding(),
-            },
-        );
-
-        let color_texture = create_color_texture(device, width, height);
         let color_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+
+        let bind_group0 = crate::shader::shader::bind_groups::BindGroup0::from_bindings(
+            device,
+            crate::shader::shader::bind_groups::BindGroupLayout0 {
+                camera: camera_buf.as_entire_buffer_binding(),
+                colors: colors.as_entire_buffer_binding(),
+                color_sampler: &color_sampler,
+            },
+        );
+
+        let color_texture = create_color_texture(device, width, height);
+
         let blit_bind_group0 = crate::shader::blit::bind_groups::BindGroup0::from_bindings(
             device,
             crate::shader::blit::bind_groups::BindGroupLayout0 {

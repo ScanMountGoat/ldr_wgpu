@@ -15,6 +15,7 @@ simple_logger = "4.2.0"
 log = "0.4.19"
 meshopt = "0.3.0"
 indexmap = "2.9.0"
+image = { version = "0.25.6", default-features = false, features = ["png"] }
 
 [build-dependencies]
-wgsl_to_wgpu = { git = "https://github.com/ScanMountGoat/wgsl_to_wgpu", rev = "c17cde3" }
+wgsl_to_wgpu = "0.15.0"
