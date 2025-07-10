@@ -9,13 +9,12 @@ The goal of this project is to research and implement suitable techniques for re
 High level design decisions are outlined below. See [ARCHITECTURE](https://github.com/ScanMountGoat/ldr_wgpu/blob/main/ARCHITECTURE.md) for details.
 If you have any comments or suggestions, feel free to open an [issue](https://github.com/ScanMountGoat/ldr_wgpu/issues) to discuss it.
 
-- GPU driven rendering for greatly reduced driver overhead
-- Compute based occlusion and frustum culling
+- Hardware raytracing for efficient rendering of very complex scenes
 - Instancing for reduced memory usage
 - Heavy usage of multithreading and caching for fast scene load times
 
 ## Compatibility
-The code is built using WGPU and targets modern GPU hardware for newer versions of Windows, Linux, and MacOS. The renderer takes advantage of modern features not available on older devices and requires DX12, Vulkan, or Metal support. This includes most GPUs and devices manufactured after around the year 2010.
+The code is built using WGPU and targets modern GPU hardware for newer versions of Windows, Linux, and MacOS. The renderer takes advantage of modern features like hardware raytracing not available on older devices and requires DX12, Vulkan, or Metal support.
 
 ## Building
 With a newer version of the [Rust toolchain](https://www.rust-lang.org/tools/install) installed, run `cargo build --release` from the main repository directory. Don't forget the --release since debug builds in Rust will run slowly. The executable will be located in `target/release`. Run the program as `cargo run --release -p ldr_viewer <ldraw library path> <ldraw file path>` or from the executable directory as `ldr_viewer <ldraw library path> <ldraw file path>`.
