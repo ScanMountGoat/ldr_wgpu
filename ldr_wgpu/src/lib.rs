@@ -79,40 +79,29 @@ fn upload_scene_components(
         .map(|geometry| shader::shader::Geometry {
             vertex_start_index: geometry.vertex_start_index as u32,
             index_start_index: geometry.index_start_index as u32,
-            _pad1: 0,
-            _pad2: 0,
         })
         .collect::<Vec<_>>();
 
-    let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Vertices"),
-        contents: bytemuck::cast_slice(&scene.vertices),
-        usage: wgpu::BufferUsages::VERTEX
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::BLAS_INPUT,
-    });
-    let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Indices"),
-        contents: bytemuck::cast_slice(&scene.indices),
-        usage: wgpu::BufferUsages::INDEX
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::BLAS_INPUT,
-    });
-    let faces = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Faces"),
-        contents: bytemuck::cast_slice(&scene.faces),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let uvs = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("UVs"),
-        contents: bytemuck::cast_slice(&scene.uvs),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let geometries = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Geometries"),
-        contents: bytemuck::cast_slice(&geometry_buffer_content),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
+    let vertices = create_buffer(
+        device,
+        "Vertices",
+        &scene.vertices,
+        wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
+    );
+    let indices = create_buffer(
+        device,
+        "Indices",
+        &scene.indices,
+        wgpu::BufferUsages::INDEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT,
+    );
+    let faces = create_buffer(device, "Faces", &scene.faces, wgpu::BufferUsages::STORAGE);
+    let uvs = create_buffer(device, "UVs", &scene.uvs, wgpu::BufferUsages::STORAGE);
+    let geometries = create_buffer(
+        device,
+        "Geometries",
+        &geometry_buffer_content,
+        wgpu::BufferUsages::STORAGE,
+    );
 
     let textures = scene
         .images
@@ -189,6 +178,25 @@ fn upload_scene_components(
     }
 }
 
+fn create_buffer<T: bytemuck::NoUninit>(
+    device: &wgpu::Device,
+    label: &str,
+    items: &[T],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    // Prevent an error with zero-sized buffers.
+    let contents = if items.is_empty() {
+        &[0u8; 64]
+    } else {
+        bytemuck::cast_slice(items)
+    };
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents,
+        usage,
+    })
+}
+
 fn load_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -207,6 +215,9 @@ fn load_scene(
     let scene_instanced = ldr_tools::load_file_instanced(path, ldraw_path, &[], &settings);
     info!("Load LDraw file: {:?}", start.elapsed());
 
+    let part_count = scene_instanced.geometry_cache.len();
+    let colored_part_count = scene_instanced.geometry_world_transforms.len();
+
     let start = std::time::Instant::now();
 
     let scene = RawSceneComponents::new(scene_instanced);
@@ -214,7 +225,7 @@ fn load_scene(
     let components = upload_scene_components(device, queue, &scene);
 
     info!(
-        "Process {} instances: {:?}",
+        "Process {part_count} parts, {colored_part_count} colored parts, {} instances: {:?}",
         scene.instances.len(),
         start.elapsed()
     );
@@ -228,6 +239,7 @@ impl RawSceneComponents {
 
         // TODO: should each geometry correspond to exactly one blas?
         // TODO: Process these in parallel?
+
         for ((name, color_code), transforms) in scene_instanced.geometry_world_transforms {
             let geometry = &scene_instanced.geometry_cache[&name];
 
@@ -251,18 +263,10 @@ impl RawSceneComponents {
             scene.indices.extend_from_slice(&geometry.vertex_indices);
 
             // UVs are defined per vertex in each face.
-            match &geometry.texture_info {
-                Some(info) => {
-                    scene
-                        .uvs
-                        .extend(info.uvs.iter().map(|v| vec4(v.x, 1.0 - v.y, 0.0, 0.0)));
-                }
-                None => {
-                    scene.uvs.extend(std::iter::repeat_n(
-                        Vec4::ZERO,
-                        geometry.vertex_indices.len(),
-                    ));
-                }
+            if let Some(info) = &geometry.texture_info {
+                scene
+                    .uvs
+                    .extend(info.uvs.iter().map(|v| vec4(v.x, 1.0 - v.y, 0.0, 0.0)));
             }
 
             let geometry_index = scene.geometries.len();

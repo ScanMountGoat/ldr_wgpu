@@ -34,7 +34,7 @@ struct Vertex {
 
 struct Face {
     color_code: u32,
-    texture_index: i32
+    texture_index: i32,
 };
 
 struct Material {
@@ -47,8 +47,6 @@ struct Material {
 struct Geometry {
     vertex_start_index: u32,
     index_start_index: u32,
-    _pad1: u32,
-    _pad2: u32
 };
 
 struct LDrawColor {
@@ -124,27 +122,31 @@ fn calculate_color(intersection: RayIntersection) -> vec4<f32> {
     // Normals are now in view space, so the view vector is simple.
     let view = vec3(0.0, 0.0, 1.0);
 
-    let n_dot_v = max(dot(normal, view), 0.0);
+    let n_dot_v = clamp(dot(normal, view), 0.0, 1.0);
 
     // Colors are defined per face to avoid interpolation.
     let face_index = intersection.primitive_index + index_start / 3;
     let color_code = faces[face_index].color_code;
     let ldraw_color = colors[color_code].rgba;
 
-    // UVs are defined per vertex in each face.
-    let uv0 = uvs[first_index_index + 0].xyz;
-    let uv1 = uvs[first_index_index + 1].xyz;
-    let uv2 = uvs[first_index_index + 2].xyz;
-    let uv = interpolate_bary(uv0, uv1, uv2, bary);
-
     var color_rgb = ldraw_color.rgb;
 
     let texture_index = faces[face_index].texture_index;
     if texture_index >= 0 && texture_index < i32(TEXTURE_COUNT) {
-        let texture_color = textureSample(textures[texture_index], color_sampler, uv.xy);
+        // UVs are defined per vertex in each face.
+        var uv = vec2(0.0);
+        if first_index_index + 2 < arrayLength(&uvs) {
+            let uv0 = uvs[first_index_index + 0].xyz;
+            let uv1 = uvs[first_index_index + 1].xyz;
+            let uv2 = uvs[first_index_index + 2].xyz;
+            uv = interpolate_bary(uv0, uv1, uv2, bary).xy;
+        }
+
+        let texture_color = textureSample(textures[texture_index], color_sampler, uv);
         color_rgb = mix(color_rgb, texture_color.rgb, texture_color.a);
     }
 
+    // TODO: Color tints at certain angles?
     return vec4(color_rgb * n_dot_v, ldraw_color.a);
 }
 
