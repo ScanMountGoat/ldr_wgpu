@@ -54,10 +54,7 @@ impl<'a> State<'a> {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: ldr_wgpu::REQUIRED_FEATURES,
-                required_limits: wgpu::Limits {
-                    max_binding_array_elements_per_shader_stage: 4,
-                    ..Default::default()
-                },
+                required_limits: ldr_wgpu::required_limits(),
                 ..Default::default()
             })
             .await

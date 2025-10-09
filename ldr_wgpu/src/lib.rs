@@ -27,6 +27,13 @@ mod shader {
     }
 }
 
+pub fn required_limits() -> wgpu::Limits {
+    wgpu::Limits {
+        max_binding_array_elements_per_shader_stage: 4,
+        ..wgpu::Limits::default().using_minimum_supported_acceleration_structure_values()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct RawSceneComponents {
     vertices: Vec<shader::shader::Vertex>,
@@ -358,17 +365,15 @@ impl Scene {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, path: &str, ldraw_path: &str) -> Self {
         let scene_components = load_scene(device, queue, path, ldraw_path);
 
-        let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
+        let mut tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: None,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
             max_instances: scene_components.scene_instances.len() as u32,
         });
 
-        let mut tlas_package = wgpu::TlasPackage::new(tlas);
-
         for (i, instance) in scene_components.scene_instances.iter().enumerate() {
-            let tlas_instance = tlas_package.index_mut(i);
+            let tlas_instance = tlas.index_mut(i);
 
             // TODO: Should each geometry correspond to exactly one blas?
             let blas_index = instance.geometry_index;
@@ -387,7 +392,7 @@ impl Scene {
         // TODO: Build tlas and blas together?
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&tlas_package));
+        encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&tlas));
         queue.submit(Some(encoder.finish()));
 
         let default_texture = default_black_texture(device, queue);
@@ -406,7 +411,7 @@ impl Scene {
                 uvs: scene_components.uvs.as_entire_buffer_binding(),
                 geometries: scene_components.geometries.as_entire_buffer_binding(),
                 textures: &textures,
-                acc_struct: tlas_package.tlas(),
+                acc_struct: &tlas,
             },
         );
 

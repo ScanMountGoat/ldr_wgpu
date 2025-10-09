@@ -1,3 +1,12 @@
 [workspace]
 members = ["ldr_viewer", "ldr_wgpu", "ldr_wgpu_batch"]
 resolver = "2"
+
+[workspace.dependencies]
+wgpu = "26.0.0"
+ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "e825d46" }
+glam = "0.30.3"
+log = "0.4.19"
+simple_logger = "5.0.0"
+futures = "0.3.27"
+image = { version = "0.25.2", default-features = false }
