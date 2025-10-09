@@ -1,4 +1,4 @@
-use glam::{vec3, vec4, Mat4, Vec4};
+use glam::{Mat4, Vec4, vec3, vec4};
 use ldr_tools::ColorCode;
 use log::info;
 use normal::vertex_normals;
@@ -350,11 +350,7 @@ impl RawSceneComponents {
 }
 fn replace_color(color: ColorCode, current_color: ColorCode) -> ColorCode {
     // TODO: Make this part of ldr_tools
-    if color == 16 {
-        current_color
-    } else {
-        color
-    }
+    if color == 16 { current_color } else { color }
 }
 
 pub struct Scene {

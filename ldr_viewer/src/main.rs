@@ -1,6 +1,6 @@
 use futures::executor::block_on;
-use glam::{vec3, Vec3};
-use ldr_wgpu::{calculate_camera_data, Renderer, Scene, FOV_Y};
+use glam::{Vec3, vec3};
+use ldr_wgpu::{FOV_Y, Renderer, Scene, calculate_camera_data};
 use log::{debug, error};
 use winit::{
     dpi::PhysicalPosition,

@@ -1,4 +1,4 @@
-use wgsl_to_wgpu::{create_shader_modules, demangle_identity, MatrixVectorTypes, WriteOptions};
+use wgsl_to_wgpu::{MatrixVectorTypes, WriteOptions, create_shader_modules, demangle_identity};
 
 fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();

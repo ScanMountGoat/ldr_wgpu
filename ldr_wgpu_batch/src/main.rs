@@ -2,7 +2,7 @@ use std::path::Path;
 
 use futures::executor::block_on;
 use image::ImageBuffer;
-use ldr_tools::glam::{vec3, Vec3};
+use ldr_tools::glam::{Vec3, vec3};
 use ldr_wgpu::calculate_camera_data;
 use log::info;
 
