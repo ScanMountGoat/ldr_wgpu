@@ -37,6 +37,7 @@ fn main() {
         label: None,
         required_features: ldr_wgpu::REQUIRED_FEATURES,
         required_limits: ldr_wgpu::required_limits(),
+        experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
         ..Default::default()
     }))
     .unwrap();
@@ -112,7 +113,7 @@ fn main() {
 
             // Clean up resources.
             queue.submit(std::iter::empty());
-            device.poll(wgpu::PollType::Wait).unwrap();
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         });
 
     println!("{:?}", start.elapsed());
@@ -157,7 +158,7 @@ fn save_screenshot(
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        device.poll(wgpu::PollType::Wait).unwrap();
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         block_on(rx.receive()).unwrap().unwrap();
 
         let data = buffer_slice.get_mapped_range();

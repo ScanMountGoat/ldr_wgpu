@@ -8,7 +8,6 @@ use wgpu::util::DeviceExt;
 pub const FOV_Y: f32 = 0.5;
 
 pub const REQUIRED_FEATURES: wgpu::Features = wgpu::Features::EXPERIMENTAL_RAY_QUERY
-    .union(wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE)
     .union(wgpu::Features::TEXTURE_BINDING_ARRAY)
     .union(wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING);
 

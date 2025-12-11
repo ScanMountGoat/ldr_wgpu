@@ -55,6 +55,7 @@ impl<'a> State<'a> {
                 label: None,
                 required_features: ldr_wgpu::REQUIRED_FEATURES,
                 required_limits: ldr_wgpu::required_limits(),
+                experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                 ..Default::default()
             })
             .await

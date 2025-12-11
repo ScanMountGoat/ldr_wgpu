@@ -3,7 +3,7 @@ members = ["ldr_viewer", "ldr_wgpu", "ldr_wgpu_batch"]
 resolver = "3"
 
 [workspace.dependencies]
-wgpu = "26.0.0"
+wgpu = "27.0.1"
 ldr_tools = { git = "https://github.com/ScanMountGoat/ldr_tools_blender", rev = "e825d46" }
 glam = "0.30.3"
 log = "0.4.19"

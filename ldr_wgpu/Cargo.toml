@@ -17,4 +17,4 @@ indexmap = "2.9.0"
 image = { workspace = true, default-features = false, features = ["png"] }
 
 [build-dependencies]
-wgsl_to_wgpu = "0.15.2"
+wgsl_to_wgpu = "0.16.0"
